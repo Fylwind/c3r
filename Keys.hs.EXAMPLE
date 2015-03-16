@@ -1,0 +1,7 @@
+module Keys where
+
+-- | Consumer Key (API key)
+consumerKey = "???"
+
+-- | Consumer Secret (API Secret)
+consumerSecret = "???"

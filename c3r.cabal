@@ -1,0 +1,32 @@
+name:                c3r
+version:             0.1.0
+synopsis:            :3
+description:         :3
+homepage:            https://github.com/Fylwind/c3r
+license:             MIT
+license-file:        LICENSE
+author:              Fylwind
+maintainer:          fyl@wolfpa.ws
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+
+executable c3r
+  main-is:             Main.hs
+  other-modules:       Keys
+  other-extensions:
+  build-depends:       base >=4.4 && <5
+                     , authenticate-oauth
+                     , bytestring
+                     , conduit
+                     , data-default
+                     , directory
+                     , filepath
+                     , http-conduit
+                     , lens
+                     , parsec
+                     , text
+                     , transformers
+                     , twitter-conduit
+                     , twitter-types-lens
+  default-language:    Haskell2010

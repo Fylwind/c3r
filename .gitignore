@@ -1,0 +1,52 @@
+Keys.hs
+
+# generic
+.\#*
+.nfs????
+*~
+*.log
+*.tmp
+
+# native
+a.out
+*.a
+*.dll
+*.dylib
+*.exe
+*.gch
+*.ipch
+*.lib
+*.o
+*.obj
+*.so
+*.sdf
+*.stackdump
+
+# Fortran
+*.mod
+
+# Haskell
+.cabal-sandbox/
+cabal.sandbox.config
+dist/
+*.chi
+*.hcr
+*.hi
+
+# JavaScript
+node_modules/
+
+# Python
+*.pyc
+
+# TeX
+*.aux
+*.bbl
+*.blg
+*.thm
+*.toc
+
+# web
+.sass-cache
+*.css.map
+*.js.map
