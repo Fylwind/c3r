@@ -98,30 +98,33 @@ processTimeline thisScreenName twitter event = liftIO $ case event of
         sName       = status ^. statusUser . userScreenName
         sText       = status ^. statusText
         sId         = status ^. statusId
-    in case P.parse (P.spaces *> pStatusText) "" sText of
-      Right (screenName, otherNames, message)
+    in do
+      Text.putStrLn (sName <> ": " <> sText)
+      hFlush stdout
+      case P.parse (P.spaces *> pStatusText) "" sText of
+        Right (screenName, otherNames, message)
 
-        | screenName == thisScreenName && message == ":3" ->
+          | screenName == thisScreenName && message == ":3" ->
 
-          let tweet msg = withManager $ \ manager ->
-                let fullMsg = Text.unwords $
-                      (("@" <>) <$> sName : otherNames) <> [msg]
-                in void . call twitter manager $
-                   update fullMsg
-                   & inReplyToStatusId ?~ sId
-                   & params <>~ [("source", PVString "Wuff")]
+            let tweet msg = withManager $ \ manager ->
+                  let fullMsg = Text.unwords $
+                        (("@" <>) <$> sName : otherNames) <> [msg]
+                  in void . call twitter manager $
+                     update fullMsg
+                     & inReplyToStatusId ?~ sId
+                     & params <>~ [("source", PVString "Wuff")]
 
-              retry n msg = tweet msg `catch` \ err ->
-                if twitterErrorCodeIs errStatusDuplicate err && n > 0
-                then retry (n - 1 :: Int) (" " <> msg)
-                else logTwitterError err
+                retry n msg = tweet msg `catch` \ err ->
+                  if twitterErrorCodeIs errStatusDuplicate err && n > 0
+                  then retry (n - 1 :: Int) (" " <> msg)
+                  else logTwitterError err
 
-          in do
-            Text.putStrLn (sName <> ": " <> sText)
-            hFlush stdout
-            retry 100 ":3"
+            in do
+              retry 100 ":3"
+              putStrLn "(replied)"
+              hFlush stdout
 
-      _ -> return ()
+        _ -> return ()
   _ -> return ()
 
 errStatusDuplicate :: Int
