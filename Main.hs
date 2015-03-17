@@ -74,6 +74,7 @@ twitterLogin accessKeysFile manager = liftIO $ do
       return credential
 
   putStr "Login successful.\n\n"
+  hFlush stdout
   return (setCredential oauth credential def)
   where lookupCredential (Credential credential) name =
           case List.lookup name credential of
