@@ -112,7 +112,6 @@ processTimeline thisScreenName twitter event = liftIO $ case event of
                   in void . call twitter manager $
                      update fullMsg
                      & inReplyToStatusId ?~ sId
-                     & params <>~ [("source", PVString "Wuff")]
 
                 retry n msg = tweet msg `catch` \ err ->
                   if twitterErrorCodeIs errStatusDuplicate err && n > 0
