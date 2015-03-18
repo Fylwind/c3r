@@ -1,5 +1,5 @@
-Getting the keys
-----------------
+Get the keys
+------------
 
 First of all, [see if you have any apps already](https://apps.twitter.com).
 
@@ -15,3 +15,19 @@ Once you have an app, you can obtain the keys from the
 
 Open `Key.hs.EXAMPLE` in a text editor and enter the keys.
 Save the file, but without the `.EXAMPLE` suffix.
+
+Build the program
+-----------------
+
+Make sure dependencies are installed:
+
+    cabal install --dependencies-only
+
+To compile the program:
+
+    cabal build
+
+Run the program
+---------------
+
+    cabal run
