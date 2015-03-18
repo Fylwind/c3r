@@ -1,7 +1,9 @@
 module Keys where
 
 -- | Consumer Key (API key)
+consumerKey :: String
 consumerKey = "???"
 
 -- | Consumer Secret (API Secret)
+consumerSecret :: String
 consumerSecret = "???"

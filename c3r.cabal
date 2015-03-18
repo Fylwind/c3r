@@ -30,3 +30,4 @@ executable c3r
                      , twitter-conduit
                      , twitter-types-lens
   default-language:    Haskell2010
+  ghc-options:         -Wall
