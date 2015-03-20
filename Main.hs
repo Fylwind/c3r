@@ -1,9 +1,15 @@
-{-# LANGUAGE OverloadedStrings #-}
-module Main where
+{-# LANGUAGE FlexibleContexts
+           , NoMonomorphismRestriction
+           , OverloadedStrings
+           , ScopedTypeVariables #-}
+module Main (main) where
 import Control.Applicative ((<*), (<*>), (*>), (<|>), some, many)
-import Control.Exception (catch)
 import Control.Lens
+import Control.Monad (liftM)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Reader (ReaderT(runReaderT))
+import Control.Monad.Reader.Class
+import Control.Monad.Trans.Resource (MonadResource)
 import Data.Conduit
 import Data.Default (def)
 import Data.Foldable (traverse_)
@@ -14,7 +20,7 @@ import Network.HTTP.Conduit
 import System.Directory
 import System.FilePath
 import System.IO (hFlush, hPutStrLn, stderr, stdout)
-import System.IO.Error (catchIOError)
+import Control.Monad.Catch (MonadCatch, catch, catchIOError)
 import Web.Authenticate.OAuth (OAuth(..), Credential(..))
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens hiding (name)
@@ -27,69 +33,89 @@ import qualified Text.Parsec as P
 import qualified Web.Authenticate.OAuth as OAuth
 import qualified Keys
 
+class HasManager a where
+  manager :: IndexPreservingGetter a Manager
+
 oauth :: OAuth
 oauth = twitterOAuth { oauthConsumerKey    = ByteString.pack Keys.consumerKey
                      , oauthConsumerSecret = ByteString.pack Keys.consumerSecret }
 
-authorize :: MonadIO io =>
-             Manager
-          -> (String -> io String)      -- ^ PIN prompt: @URL -> m PIN@
+authorize :: (MonadIO io, MonadReader env io, HasManager env) =>
+             (String -> io String)      -- ^ PIN prompt: @URL -> m PIN@
           -> io Credential
-authorize manager getPIN = do
-  credential <- OAuth.getTemporaryCredential oauth manager
-  let authorizeUrl = takeWhile (/= '&') (OAuth.authorizeUrl oauth credential)
-  pin <- getPIN authorizeUrl
-  let pin'        = ByteString.pack pin
-      credential' = OAuth.insert "oauth_verifier" pin' credential
-  OAuth.getAccessToken oauth credential' manager
+authorize getPIN = do
+  mgr  <- (^. manager) <$> ask
+  cred <- OAuth.getTemporaryCredential oauth mgr
+  pin  <- getPIN (makeAuthUrl cred)
+  OAuth.getAccessToken oauth (combinePinCred pin cred) mgr
+  where
 
-twitterLogin :: MonadIO io =>
+    (<$>) = liftM                       -- for backward compatibility only
+
+    makeAuthUrl cred =
+      takeWhile (/= '&') (OAuth.authorizeUrl oauth cred)
+
+    combinePinCred pin cred =
+      OAuth.insert "oauth_verifier" (ByteString.pack pin) cred
+
+twitterLogin :: (MonadIO io, MonadReader env io, HasManager env) =>
                 FilePath
-             -> Manager
              -> io TWInfo
-twitterLogin accessKeysFile manager = liftIO $ do
-  accessKeys <- ByteString.readFile accessKeysFile
-                `catchIOError` \ _ -> return mempty
-  credential <- case ByteString.lines accessKeys of
+twitterLogin keysFile = do
 
-    -- use saved keys if they exist
-    accessToken : accessSecret : _ ->
-      return $ Credential [ ("oauth_token",        accessToken)
-                          , ("oauth_token_secret", accessSecret) ]
+  -- read the keys from file
+  keys <- liftIO $ ByteString.readFile keysFile
+                   `catchIOError` \ _ -> return mempty
 
-    -- ask for authorization if keys are absent
-    _ -> do
-      credential <- authorize manager $ \ url -> do
-        putStr $
-          "1. Go to this URL (all on one line):\n\n" <>
-          url <> "\n\n" <>
-          "2. Enter the PIN here:\n\nPIN> "
+  cred <- case ByteString.lines keys of
+    -- if keys are stored
+    token : secret : _ -> return (makeAuth token secret)
+    -- if keys are absent
+    _                  -> requestAuth
+
+  liftIO $ do
+    putStr "Login successful.\n\n"
+    hFlush stdout
+  return (setCredential oauth cred def)
+
+  where
+
+    requestAuth = do
+      cred <- authorize $ \ url -> liftIO $ do
+        putStr ("1. Go to this URL (all on one line):\n\n" <>
+                url <> "\n\n" <>
+                "2. Enter the PIN here:\n\nPIN> ")
         hFlush stdout
         getLine
-      accessToken  <- lookupCredential credential "oauth_token"
-      accessSecret <- lookupCredential credential "oauth_token_secret"
-      let accessKeys' = ByteString.unlines [accessToken, accessSecret]
-      ByteString.writeFile accessKeysFile accessKeys'
-      putStr ("\nAccess keys saved to " <> accessKeysFile <> ".\n\n")
-      return credential
+      accessToken  <- lookupCred cred "oauth_token"
+      accessSecret <- lookupCred cred "oauth_token_secret"
+      let keys' = ByteString.unlines [accessToken, accessSecret]
+      liftIO $ do
+        ByteString.writeFile keysFile keys'
+        putStr ("\nAccess keys saved to " <> keysFile <> ".\n\n")
+      return cred
 
-  putStr "Login successful.\n\n"
-  hFlush stdout
-  return (setCredential oauth credential def)
-  where lookupCredential (Credential credential) name =
-          case List.lookup name credential of
-            Just value -> return value
-            Nothing    -> ioError (userError "failed to receive access keys")
+    makeAuth token secret =
+      Credential [("oauth_token", token), ("oauth_token_secret", secret)]
 
-ensureDirectoryExist :: FilePath -> IO FilePath
-ensureDirectoryExist dir = createDirectoryIfMissing True dir >> return dir
+    lookupCred (Credential cred) name =
+      case List.lookup name cred of
+        Just value -> return value
+        Nothing    -> liftIO . ioError . userError $
+                      "failed to receive access keys"
 
-processTimeline :: MonadIO io =>
+ensureDirectoryExist :: MonadIO io => FilePath -> io FilePath
+ensureDirectoryExist dir = do
+  liftIO $ createDirectoryIfMissing True dir
+  return dir
+
+processTimeline :: (MonadIO io, MonadCatch io, MonadResource io,
+                    MonadReader env io, HasManager env) =>
                    Text
                 -> TWInfo
                 -> StreamingAPI
                 -> io ()
-processTimeline thisScreenName twitter event = liftIO $ case event of
+processTimeline thisScreenName twitter event = case event of
   SStatus status ->
     let pStatusText = (,,) <$> pScreenName <*> many pScreenName <*> pMessage
         pScreenName = Text.pack <$>
@@ -99,29 +125,33 @@ processTimeline thisScreenName twitter event = liftIO $ case event of
         sText       = status ^. statusText
         sId         = status ^. statusId
     in do
-      Text.putStrLn (sName <> ": " <> sText)
-      hFlush stdout
+      liftIO $ do
+        Text.putStrLn (sName <> ": " <> sText)
+        hFlush stdout
       case P.parse (P.spaces *> pStatusText) "" sText of
         Right (screenName, otherNames, message)
 
           | screenName == thisScreenName && message == ":3" ->
 
-            let tweet msg = withManager $ \ manager ->
+            let tweet msg = do
+                  mgr <- (^. manager) <$> ask
                   let fullMsg = Text.unwords $
                         (("@" <>) <$> sName : otherNames) <> [msg]
-                  in void . call twitter manager $
-                     update fullMsg
-                     & inReplyToStatusId ?~ sId
+                    in void . call twitter mgr $
+                       update fullMsg
+                       & inReplyToStatusId ?~ sId
 
-                retry n msg = tweet msg `catch` \ err ->
+                retry n msg =
+                  tweet msg `catch` \ err ->
                   if twitterErrorCodeIs errStatusDuplicate err && n > 0
                   then retry (n - 1 :: Int) (" " <> msg)
                   else logTwitterError err
 
             in do
               retry 100 ":3"
-              putStrLn "(replied)"
-              hFlush stdout
+              liftIO $ do
+                putStrLn "(replied)"
+                hFlush stdout
 
         _ -> return ()
   _ -> return ()
@@ -135,20 +165,26 @@ twitterErrorCodeIs code err = case err of
     [TwitterErrorMessage code' _] -> code == code'
   _                               -> False
 
-logTwitterError :: TwitterError -> IO ()
-logTwitterError err = do
+logTwitterError :: MonadIO io => TwitterError -> io ()
+logTwitterError err = liftIO $ do
   case err of
     TwitterErrorResponse _ _ msgs ->
       (Text.hPutStrLn stderr . twitterErrorMessage) `traverse_` msgs
     _ -> hPutStrLn stderr (show err)
   hFlush stderr
 
+data Env = Env { _manager :: Manager }
+
+instance HasManager Env where
+  manager = to _manager
+
 main :: IO ()
 main = do
-  confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "c3r"
-  withManager $ \ manager -> do
-    twitter <- twitterLogin (confDir </> "keys") manager
-    thisUser <- call twitter manager accountVerifyCredentials
+  confDir <- ensureDirectoryExist =<< liftIO (getAppUserDataDirectory "c3r")
+  withManager $ \ mgr -> (`runReaderT` Env mgr) $ do
+    let keysFile = confDir </> "keys"
+    twitter <- twitterLogin keysFile
+    thisUser <- call twitter mgr accountVerifyCredentials
     let thisScreenName = thisUser ^. userScreenName
-    streamSource <- stream twitter manager userstream
+    streamSource <- stream twitter mgr userstream
     streamSource $$+- C.mapM_ (processTimeline thisScreenName twitter)
