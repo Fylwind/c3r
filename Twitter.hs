@@ -11,19 +11,16 @@ module Twitter
   , TwitterError(..)
   , twitterErrorMessage
   ) where
-import Control.Exception.Lifted (catch, throwIO)
+import Prelude ()
+import Common
+import qualified Keys
+
 import Control.Lens
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (ReaderT, runReaderT)
-import Control.Monad.Reader.Class
-import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Reader.Class (MonadReader)
 import Control.Monad.Trans.Resource (MonadResource, ResourceT)
-import Data.ByteString (ByteString)
 import Data.Conduit (($$+-))
 import Data.Default (def)
-import Data.Functor (void)
-import Data.Monoid ((<>))
-import Data.Text (Text)
 import Network.HTTP.Conduit
 import Web.Authenticate.OAuth (OAuth(..), Credential(..))
 import Web.Twitter.Conduit
@@ -33,8 +30,6 @@ import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Conduit.List as C
 import qualified Data.List as List
 import qualified Web.Authenticate.OAuth as OAuth
-
-import qualified Keys
 
 -- | 'Monad' within which HTTP operations may be performed.
 type ManagerM a = ReaderT Manager (ResourceT IO) a
@@ -86,7 +81,7 @@ preauthorize :: MonadManager r m => m (Credential, String)
 preauthorize = do
   mgr  <- view manager
   cred <- OAuth.getTemporaryCredential oauth mgr
-  return (cred, takeWhile (/= '&') (OAuth.authorizeUrl oauth cred))
+  return (cred, List.takeWhile (/= '&') (OAuth.authorizeUrl oauth cred))
 
 authorize :: MonadManager r m =>
              Credential -> String -> m (ByteString, ByteString)
@@ -101,7 +96,7 @@ authorize cred pin = do
         lookupCred (Credential cred) name =
           case List.lookup name cred of
             Just value -> return value
-            Nothing    -> liftIO . ioError . userError $
+            Nothing    -> ioError . userError $
                           "failed to receive access keys"
 
 newTWInfo :: (ByteString, ByteString) -> TWInfo

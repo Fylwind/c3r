@@ -3,16 +3,13 @@
   , FlexibleContexts
   , OverloadedStrings #-}
 module Main (main) where
-import Control.Applicative (Applicative, (<*), (<*>), (*>), (<|>), some, many)
+import Prelude ()
+import Common
+import Twitter
+
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Lifted (fork)
-import Control.Exception.Lifted (catch)
 import Control.Lens
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Foldable (traverse_)
-import Data.Functor ((<$>), void)
-import Data.Monoid ((<>), mempty)
-import Data.Text (Text)
 import System.Directory
 import System.FilePath
 import System.Random (randomRIO)
@@ -20,9 +17,6 @@ import Web.Twitter.Types.Lens
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Text as Text
 import qualified Text.Parsec as P
-
-import IOUtils
-import Twitter
 
 main :: IO ()
 main = do
@@ -51,31 +45,24 @@ twitterAuth :: MonadManager r m => FilePath -> m TWInfo
 twitterAuth keysFile = do
 
   -- read the keys from file
-  keys <- liftIO $
-    ByteString.readFile keysFile
-    `catchIOError` \ _ -> return mempty
+  keys <- readFileB keysFile `catchIOError` \ _ -> return mempty
 
   -- check whether the keys are stored or absent
   cred <- case ByteString.lines keys of
     token : secret : _ -> return (token, secret)
     _                  -> do
       (cred, url) <- preauthorize
-      pin <- liftIO $ do
-        putStr ("1. Go to this URL (all on one line):\n\n" <>
-                url <> "\n\n" <>
-                "2. Enter the PIN here:\n\nPIN> ")
-        hFlush stdout
-        getLine
+      putStr' ("1. Go to this URL (all on one line):\n\n" <>
+               url <> "\n\n" <>
+               "2. Enter the PIN here:\n\nPIN> ")
+      pin <- getLine
       (token, secret) <- authorize cred pin
       let keys' = ByteString.unlines [token, secret]
-      liftIO $ do
-        ByteString.writeFile keysFile keys'
-        putStr ("\nAccess keys saved to " <> keysFile <> ".\n\n")
+      writeFileB keysFile keys'
+      putStr' ("\nAccess keys saved to " <> keysFile <> ".\n\n")
       return (token, secret)
 
-  liftIO $ do
-    putStr "Login successful.\n\n"
-    hFlush stdout
+  putStr' "Login successful.\n\n"
   return (newTWInfo cred)
 
 -- | Parse the status text to obtain the name of the recipient, names of

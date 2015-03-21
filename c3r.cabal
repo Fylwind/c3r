@@ -13,7 +13,20 @@ cabal-version:       >=1.10
 
 executable c3r
   main-is:             Main.hs
-  other-modules:       IOUtils Keys Twitter
+  other-modules:       Keys
+                       Twitter
+                       Calico.Base
+                       Calico.IO
+                       Calico.IOControl
+                       Calico.MonadIO
+                       Calico.MonadIOControl
+                       Calico.ByteString
+                       Calico.ByteString.IO
+                       Calico.ByteString.MonadIO
+                       Calico.Text
+                       Calico.Text.IO
+                       Calico.Text.MonadIO
+  hs-source-dirs:      . calico
   other-extensions:    ConstraintKinds
                        FlexibleContexts
                        FlexibleInstances

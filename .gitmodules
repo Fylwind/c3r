@@ -1,0 +1,3 @@
+[submodule "calico"]
+	path = calico
+	url = https://github.com/Rufflewind/calico-hs
