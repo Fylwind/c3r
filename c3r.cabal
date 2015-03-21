@@ -13,8 +13,11 @@ cabal-version:       >=1.10
 
 executable c3r
   main-is:             Main.hs
-  other-modules:       Keys
-  other-extensions:
+  other-modules:       IOUtils Keys Twitter
+  other-extensions:    ConstraintKinds
+                       FlexibleContexts
+                       FlexibleInstances
+                       OverloadedStrings
   build-depends:       base >=4.4 && <5
                      , authenticate-oauth
                      , bytestring

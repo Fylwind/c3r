@@ -131,15 +131,15 @@ postReply msg id = withTwitter $ \ tw mgr -> do
 
 -- | Reply the given user, inserting extra spaces if necessary to avoid
 --   the "Status duplicate" error
-postReply' :: MonadTwitter r m =>
+postReplyR :: MonadTwitter r m =>
               Text                      -- ^ screen name of recipient
            -> Text                      -- ^ message
            -> Integer                   -- ^ status ID being replied to
            -> m ()
-postReply' name msg id =
+postReplyR name msg id =
   postReply msg' id `catch` \ err ->
   if errorCodeIs errStatusDuplicate err && Text.length msg' < maxMsgLen
-  then postReply' name (" " <> msg) id
+  then postReplyR name (" " <> msg) id
   else throwIO err
   where msg' = "@" <> name <> " " <> msg
 
