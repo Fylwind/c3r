@@ -21,12 +21,14 @@ executable c3r
                      , conduit
                      , data-default
                      , directory
-                     , exceptions
                      , filepath
                      , http-conduit
                      , lens
+                     , lifted-base
+                     , monad-control
                      , mtl
                      , parsec
+                     , random
                      , resourcet
                      , text
                      , transformers

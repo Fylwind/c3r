@@ -2,7 +2,6 @@
     ConstraintKinds
   , FlexibleContexts
   , FlexibleInstances
-  , NoMonomorphismRestriction
   , OverloadedStrings #-}
 module Twitter
   ( -- * Main module
@@ -12,25 +11,29 @@ module Twitter
   , TwitterError(..)
   , twitterErrorMessage
   ) where
+import Control.Exception.Lifted (catch, throwIO)
 import Control.Lens
-import Control.Monad.Catch (MonadCatch)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Monad.Trans.Resource (MonadResource, ResourceT)
 import Data.ByteString (ByteString)
 import Data.Conduit (($$+-))
 import Data.Default (def)
 import Data.Functor (void)
+import Data.Monoid ((<>))
 import Data.Text (Text)
 import Network.HTTP.Conduit
 import Web.Authenticate.OAuth (OAuth(..), Credential(..))
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens hiding (name)
+import qualified Data.Text as Text
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Conduit.List as C
 import qualified Data.List as List
 import qualified Web.Authenticate.OAuth as OAuth
+
 import qualified Keys
 
 -- | 'Monad' within which HTTP operations may be performed.
@@ -43,7 +46,7 @@ type TwitterM a = ReaderT (TWInfo, Manager) (ResourceT IO) a
 --
 --   Note: this is implicitly a subclass of 'MonadIO'.
 type MonadManager r m = (HasManager r, MonadReader r m,
-                         MonadCatch m, MonadResource m)
+                         MonadBaseControl IO m, MonadResource m)
 
 -- | 'Monad's that have a 'TWInfo' for HTTP connections.
 --
@@ -126,6 +129,20 @@ postReply :: MonadTwitter r m => Text -> Integer -> m ()
 postReply msg id = withTwitter $ \ tw mgr -> do
   void . call tw mgr $ update msg & inReplyToStatusId ?~ id
 
+-- | Reply the given user, inserting extra spaces if necessary to avoid
+--   the "Status duplicate" error
+postReply' :: MonadTwitter r m =>
+              Text                      -- ^ screen name of recipient
+           -> Text                      -- ^ message
+           -> Integer                   -- ^ status ID being replied to
+           -> m ()
+postReply' name msg id =
+  postReply msg' id `catch` \ err ->
+  if errorCodeIs errStatusDuplicate err && Text.length msg' < maxMsgLen
+  then postReply' name (" " <> msg) id
+  else throwIO err
+  where msg' = "@" <> name <> " " <> msg
+
 errStatusDuplicate :: Int
 errStatusDuplicate = 187
 
@@ -134,3 +151,6 @@ errorCodeIs code err = case err of
   TwitterErrorResponse _ _ [TwitterErrorMessage code' _]
     -> code == code'
   _ -> False
+
+maxMsgLen :: Int
+maxMsgLen = 140

@@ -1,20 +1,23 @@
 {-# LANGUAGE
     ConstraintKinds
   , FlexibleContexts
-  , NoMonomorphismRestriction
   , OverloadedStrings #-}
 module Main (main) where
 import Control.Applicative ((<*), (<*>), (*>), (<|>), some, many)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Lifted (fork)
+import Control.Exception.Lifted (catch)
 import Control.Lens
-import Control.Monad.Catch (catch, catchIOError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Foldable (traverse_)
-import Data.Functor ((<$>))
+import Data.Functor ((<$>), void)
 import Data.Monoid ((<>), mempty)
 import Data.Text (Text)
 import System.Directory
 import System.FilePath
 import System.IO (hFlush, hPutStrLn, stderr, stdout)
+import System.Random (randomRIO)
 import Web.Twitter.Types.Lens
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Text as Text
@@ -22,6 +25,16 @@ import qualified Data.Text.IO as Text
 import qualified Text.Parsec as P
 
 import Twitter
+
+main :: IO ()
+main = do
+  confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "config/c3r"
+  runTwitterM (twitterAuth (confDir </> "keys")) $ do
+    myName <- getMyName
+    userStream (processTimeline myName)
+
+catchIOError :: MonadBaseControl IO m => m a -> (IOError -> m a) -> m a
+catchIOError = catch
 
 ensureDirectoryExist :: MonadIO io => FilePath -> io FilePath
 ensureDirectoryExist dir = do
@@ -74,29 +87,19 @@ processTimeline thisScreenName event = case event of
         Text.putStrLn (sName <> ": " <> sText)
         hFlush stdout
       case P.parse (P.spaces *> pStatusText) "" sText of
-        Right (screenName, otherNames, message)
-
-          | screenName == thisScreenName && message == ":3" ->
-
-            let tweet msg =
-                  let fullMsg = Text.unwords $
-                        (("@" <>) <$> sName : otherNames) <> [msg]
-                  in postReply fullMsg sId
-
-                retry :: MonadTwitter r m => Int -> Text -> m ()
-                retry n msg =
-                  tweet msg `catch` \ err ->
-                  if errorCodeIs errStatusDuplicate err && n > 0
-                  then retry (n - 1) (" " <> msg)
-                  else logTwitterError err
-
-            in do
-              retry 100 ":3"
+        Right (screenName, __otherNames, message)
+          | screenName == thisScreenName && message == ":3"
+            -> void . fork $ do
+              let delay = 60 -- seconds
+              liftIO $ do
+                factor <- randomRIO (0.01, 15.0 :: Double)
+                threadDelay (round (1e6 * delay * factor))
+              postReply' sName ":3" sId `catch` logTwitterError
               liftIO $ do
                 putStrLn "(replied)"
                 hFlush stdout
 
-        _ -> return ()
+        _   -> return ()
   _ -> return ()
 
 logTwitterError :: MonadIO m => TwitterError -> m ()
@@ -106,10 +109,3 @@ logTwitterError err = liftIO $ do
       -> traverse_ (Text.hPutStrLn stderr . twitterErrorMessage) msgs
     _ -> hPutStrLn stderr (show err)
   hFlush stderr
-
-main :: IO ()
-main = do
-  confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "config/c3r"
-  runTwitterM (twitterAuth (confDir </> "keys")) $ do
-    myName <- getMyName
-    userStream (processTimeline myName)
