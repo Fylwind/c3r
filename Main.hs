@@ -19,6 +19,7 @@ import qualified Text.Parsec as P
 
 main :: IO ()
 main = do
+  hSetEncoding stdout utf8
   confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "config/c3r"
   runTwitterM (twitterAuth (confDir </> "keys")) $ do
     myName <- getMyName
