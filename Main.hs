@@ -8,7 +8,6 @@ import Common
 import Twitter
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Lifted (fork)
 import Control.Lens
 import System.Directory
 import System.FilePath
@@ -91,10 +90,12 @@ processTimeline myName event = case event of
         Just (name, _, message)
           | name == myName && message == ":3"
             -> void . fork $ do
-              let delay = 60 -- seconds
+              let coeff = 60 -- seconds
               liftIO $ do
-                factor <- randomRIO (0.01, 15.0 :: Double)
-                threadDelay (round (1e6 * delay * factor))
+                factor <- randomRIO (0.01, 15 :: Double)
+                let delay = coeff * factor
+                putStrLn' ("replying in " <> show delay <> " sec")
+                threadDelay (round (1e6 * delay))
               postReplyR sName ":3" sId `catch` logTwitterError
               putTextLn' "(replied)"
 
