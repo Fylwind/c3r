@@ -31,6 +31,7 @@ ssh "$vm" <<EOF
 cd $app_
 git fetch -p origin
 git reset --hard origin/master
+git submodule update
 cabal build --ghc-options=-optl-static
 EOF
 rsync -aPvz "$vm:$app/dist/build/$app/$app" "/tmp/$app"
