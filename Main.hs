@@ -7,7 +7,6 @@ import Prelude ()
 import Common
 import Twitter
 
-import Control.Concurrent (threadDelay)
 import Control.Lens
 import System.Directory
 import System.FilePath
@@ -23,7 +22,13 @@ main = do
   confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "config/c3r"
   runTwitterM (twitterAuth (confDir </> "keys")) $ do
     myName <- getMyName
-    userStream (processTimeline myName)
+    forever (forkWait (userStream (processTimeline myName)))
+
+forkWait :: MonadBaseControl IO m => m a -> m (Either SomeException a)
+forkWait action = do
+  result <- newEmptyMVar
+  _      <- action `forkFinally` putMVar result
+  readMVar result
 
 eitherToMaybe :: Either b a -> Maybe a
 eitherToMaybe (Left  _) = Nothing
@@ -34,15 +39,9 @@ ensureDirectoryExist dir = do
   liftIO (createDirectoryIfMissing True dir)
   return dir
 
-logTwitterError :: (Applicative m, MonadIO m) => TwitterError -> m ()
-logTwitterError err = do
-  case err of
-    TwitterErrorResponse _ _ msgs
-      -> traverse_ (hPutTextLn' stderr . twitterErrorMessage) msgs
-    _ -> hPrint' stderr (show err)
-
 twitterAuth :: MonadManager r m => FilePath -> m TWInfo
 twitterAuth keysFile = do
+  putStrLn' "----------------------------------------"
 
   -- read the keys from file
   keys <- readFileB keysFile `catchIOError` \ _ -> return mempty
@@ -62,7 +61,7 @@ twitterAuth keysFile = do
       putStr' ("\nAccess keys saved to " <> keysFile <> ".\n\n")
       return (token, secret)
 
-  putStr' "Login successful.\n\n"
+  putStrLn' "Login successful.\n----------------------------------------"
   return (newTWInfo cred)
 
 -- | Parse the status text to obtain the name of the recipient, names of
@@ -92,13 +91,12 @@ processTimeline myName event = case event of
           | name == myName && message == ":3"
             -> void . fork $ do
               let coeff = 60 -- seconds
-              liftIO $ do
-                factor <- randomRIO (0.01, 15 :: Double)
-                let delay = coeff * factor
-                putStrLn' ("*** replying in " <> show delay <> " sec")
-                threadDelay (round (1e6 * delay))
-              postReplyR sName ":3" sId `catch` logTwitterError
-              putTextLn' "*** replied"
+              factor <- liftIO (randomRIO (0.01, 15 :: Double))
+              let delay = coeff * factor
+              putStrLn' ("---------- replying in " <> show delay <> " sec")
+              threadDelay (round (1e6 * delay))
+              postReplyR sName ":3" sId
+              putTextLn' "---------- replied"
 
         _   -> return ()
       where sName = status ^. statusUser . userScreenName
