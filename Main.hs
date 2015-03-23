@@ -94,10 +94,10 @@ processTimeline myName event = case event of
               liftIO $ do
                 factor <- randomRIO (0.01, 15 :: Double)
                 let delay = coeff * factor
-                putStrLn' ("replying in " <> show delay <> " sec")
+                putStrLn' ("*** replying in " <> show delay <> " sec")
                 threadDelay (round (1e6 * delay))
               postReplyR sName ":3" sId `catch` logTwitterError
-              putTextLn' "(replied)"
+              putTextLn' "*** replied"
 
         _   -> return ()
       where sName = status ^. statusUser . userScreenName
