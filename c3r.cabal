@@ -13,7 +13,8 @@ cabal-version:       >=1.10
 
 executable c3r
   main-is:             Main.hs
-  other-modules:       Keys
+  other-modules:       Common
+                       Keys
                        Twitter
                        Calico.Base
                        Calico.IO
