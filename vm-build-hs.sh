@@ -20,9 +20,9 @@ set -e
 #     but suffixed with an underscore
 #
 escape() {
-    _1="s/'/'\\\\''/g"
-    eval '_2=$'"$1"
-    _1=`printf "'"; printf "%s" "$_2" | sed "$_1"; printf "'"`
+    eval '_1=$'"$1"
+    _2="s/'/'\\\\''/g"
+    _1=\'`printf "%s" "$_1" | sed "$_2"`\'
     eval "$1"'_=$_1'
 }
 
