@@ -10,9 +10,10 @@ import Twitter
 import Control.Lens
 import System.Directory
 import System.FilePath
-import System.Random (randomRIO)
+import qualified System.Random as Random
 import Web.Twitter.Types.Lens
 import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Text.Parsec as P
 
@@ -64,22 +65,36 @@ twitterAuth keysFile = do
   putStrLn' "Login successful.\n----------------------------------------"
   return (newTWInfo cred)
 
+simpleParse :: (P.Stream s Identity t, Show t) =>
+               P.Parsec s () a -> s -> Maybe a
+simpleParse parser = eitherToMaybe . P.parse (parser <* P.eof) ""
+
+pToken :: P.Stream s m Char => P.ParsecT s u m a -> P.ParsecT s u m a
+pToken x  = P.try (x <* P.spaces)
+
 -- | Parse the status text to obtain the name of the recipient, names of
 --   directly mentioned users, and the message itself.
 --
 --   Note: mentioned users in the body of the message remain in the message.
 parseStatusText :: Text -> Maybe (Text, [Text], Text)
-parseStatusText = eitherToMaybe . P.parse (P.spaces *> parser) ""
+parseStatusText = simpleParse (P.spaces *> parser)
   where parser   = (,,) <$> name <*> many name <*> message
-        message  = Text.pack <$> token (many P.anyChar)
-        name     = Text.pack <$> token (P.char '@' *> some nameChar)
+        message  = Text.pack <$> pToken (many P.anyChar)
+        name     = Text.pack <$> pToken (P.char '@' *> some nameChar)
         nameChar = P.alphaNum <|> P.char '_'
-        token    = (<* P.spaces)
+
+parseArfs :: Text -> Maybe Int
+parseArfs = simpleParse (P.spaces *> parser)
+  where parser = length <$> many (pToken (P.string "arf")) <*
+                 P.optional (pToken (P.string ":3"))
 
 printStatus :: MonadIO m => Status -> m ()
 printStatus status = putTextLn' (name <> ": " <> text)
   where name = status ^. statusUser . userScreenName
         text = status ^. statusText
+
+randomDouble :: MonadIO m => (Double, Double) -> m Double
+randomDouble = liftIO . Random.randomRIO
 
 processTimeline :: MonadTwitter r m => Text -> StreamingAPI -> m ()
 processTimeline myName event = case event of
@@ -88,17 +103,28 @@ processTimeline myName event = case event of
       printStatus status
       case parseStatusText sText of
         Just (name, _, message)
-          | name == myName && message == ":3"
-            -> void . fork $ do
-              let coeff = 60 -- seconds
-              factor <- liftIO (randomRIO (0.01, 15 :: Double))
-              let delay = coeff * factor
-              putStrLn' ("---------- replying in " <> show delay <> " sec")
-              threadDelay (round (1e6 * delay))
-              postReplyR sName ":3" sId
-              putTextLn' "---------- replied"
+          | name == myName ->
+            case message of
 
-        _   -> return ()
+              ":3" -> void . fork $ do
+                let coeff = 60 -- seconds
+                factor <- randomDouble (0.01, 15)
+                let delay = coeff * factor
+                putStrLn' ("---------- replying in " <> show delay <> " sec")
+                threadDelay (round (1e6 * delay))
+                postReplyR sName ":3" sId
+                putTextLn' "---------- replied"
+
+              _ -> case parseArfs message of
+                Just count -> void . fork $ do
+                      factor <- randomDouble (0.01, 1)
+                      let count' = round (fromIntegral count * factor)
+                          msg    = mconcat (List.replicate count' "arf") <> " :3"
+                      postReplyR sName msg sId
+                      putTextLn' "---------- replied"
+                _ -> return ()
+
+        _ -> return ()
       where sName = status ^. statusUser . userScreenName
             sText = status ^. statusText
             sId   = status ^. statusId
