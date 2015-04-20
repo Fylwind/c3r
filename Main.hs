@@ -1,7 +1,4 @@
-{-# LANGUAGE
-    ConstraintKinds
-  , FlexibleContexts
-  , OverloadedStrings #-}
+{-# LANGUAGE ConstraintKinds, FlexibleContexts, OverloadedStrings #-}
 module Main (main) where
 import Prelude ()
 import Common
@@ -10,8 +7,9 @@ import Twitter
 import Control.Lens
 import System.Directory
 import System.FilePath
-import qualified System.Random as Random
+import System.Random (Random)
 import Web.Twitter.Types.Lens
+import qualified System.Random as Random
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.List as List
 import qualified Data.Text as Text
@@ -70,7 +68,13 @@ simpleParse :: (P.Stream s Identity t, Show t) =>
 simpleParse parser = eitherToMaybe . P.parse (parser <* P.eof) ""
 
 pToken :: P.Stream s m Char => P.ParsecT s u m a -> P.ParsecT s u m a
-pToken x  = P.try (x <* P.spaces)
+pToken x = P.try (x <* P.spaces)
+
+pTokenS :: P.Stream s m Char => String -> P.ParsecT s u m Text
+pTokenS = (Text.pack <$>) . pToken . P.string
+
+pWord :: P.Stream s m Char => P.ParsecT s u m Text
+pWord = Text.pack <$> some P.alphaNum
 
 -- | Parse the status text to obtain the name of the recipient, names of
 --   directly mentioned users, and the message itself.
@@ -85,47 +89,61 @@ parseStatusText = simpleParse (P.spaces *> parser)
 
 parseArfs :: Text -> Maybe Int
 parseArfs = simpleParse (P.spaces *> parser)
-  where parser = length <$> many (pToken (P.string "arf")) <*
-                 P.optional (pToken (P.string ":3"))
+  where parser = length <$> many (pTokenS "arf") <* P.optional (pTokenS ":3")
 
 printStatus :: MonadIO m => Status -> m ()
 printStatus status = putTextLn' (name <> ": " <> text)
   where name = status ^. statusUser . userScreenName
         text = status ^. statusText
 
+randomRIO :: (MonadIO m, Random a) => (a, a) -> m a
+randomRIO = liftIO . Random.randomRIO
+
 randomDouble :: MonadIO m => (Double, Double) -> m Double
-randomDouble = liftIO . Random.randomRIO
+randomDouble = randomRIO
+
+randomFiber :: MonadIO m => [[a]] -> m [a]
+randomFiber []               = return []
+randomFiber (choices : rest) = do
+  index <- randomRIO (0, length choices - 1)
+  rest' <- randomFiber rest
+  return (choices !! index : rest')
+
+runHandlers :: Monad m => [Maybe (m ())] -> m ()
+runHandlers (Just x  : _) = x
+runHandlers (Nothing : r) = runHandlers r
+runHandlers []            = return ()
 
 processTimeline :: MonadTwitter r m => Text -> StreamingAPI -> m ()
-processTimeline myName event = case event of
-  SStatus status
-    -> do
-      printStatus status
-      case parseStatusText sText of
-        Just (name, _, message)
-          | name == myName ->
-            case message of
+processTimeline myName (SStatus status) = do
+  printStatus status
+  fromMaybe (return ()) $ do
+    (name, _, message) <- parseStatusText sText
+    guard (name == myName)
+    return $ runHandlers
+      [ if message == ":3"
+        then return . void . fork $ do
+          let coeff = 60 -- seconds
+          factor <- randomRIO (0.01, 15 :: Double)
+          let delay = coeff * factor
+          putStrLn' ("---------- replying in " <> show delay <> " sec")
+          threadDelay (round (1e6 * delay))
+          postReplyR sName ":3" sId
+          putTextLn' "---------- replied"
+        else mzero
 
-              ":3" -> void . fork $ do
-                let coeff = 60 -- seconds
-                factor <- randomDouble (0.01, 15)
-                let delay = coeff * factor
-                putStrLn' ("---------- replying in " <> show delay <> " sec")
-                threadDelay (round (1e6 * delay))
-                postReplyR sName ":3" sId
-                putTextLn' "---------- replied"
+      , do
+        count <- parseArfs message
+        return . void . fork $ do
+          factor <- randomRIO (0.01, 1 :: Double)
+          let count' = round (fromIntegral count * factor)
+              msg    = mconcat (List.replicate count' "arf") <> " :3"
+          postReplyR sName msg sId
+          putTextLn' "---------- replied"
 
-              _ -> case parseArfs message of
-                Just count -> void . fork $ do
-                      factor <- randomDouble (0.01, 1)
-                      let count' = round (fromIntegral count * factor)
-                          msg    = mconcat (List.replicate count' "arf") <> " :3"
-                      postReplyR sName msg sId
-                      putTextLn' "---------- replied"
-                _ -> return ()
+      ]
 
-        _ -> return ()
-      where sName = status ^. statusUser . userScreenName
-            sText = status ^. statusText
-            sId   = status ^. statusId
-  _ -> return ()
+  where sName = status ^. statusUser . userScreenName
+        sText = status ^. statusText
+        sId   = status ^. statusId
+processTimeline _ _ = return ()
