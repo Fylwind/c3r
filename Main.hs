@@ -91,6 +91,24 @@ parseArfs :: Text -> Maybe Int
 parseArfs = simpleParse (P.spaces *> parser)
   where parser = length <$> many (pTokenS "arf") <* P.optional (pTokenS ":3")
 
+parseMews :: Text -> Maybe [[Text]]
+parseMews = simpleParse (P.spaces *> parser)
+  where parser = (:) <$> star <*> innerParser <|>
+                 (:) <$> outer <*> (([" "] :) <*> parser) <|>
+                 pure []
+        innerParser = (:) <$> star <*> parser <|>
+                      (:) <$> inner <*> (([" "] :) <$> innerParser) <|>
+                      pure []
+        star = return <$> pTokenS "*"
+        outer =  P.choice ((pure <$>) . f <$> [":3", "<3", ":D", ":p", ":P", "^^"])
+        inner =  pTokenS "mew"
+             <|> wordGroup ["nose", "nuzzle"]
+             <|> wordGroup ["hug", "snug"]
+             <|> wordGroup ["wiggle", "wag"]
+             <|> wordGroupAs ["bark", "lick"] ["lick", "mew", "purr", "bark"]
+        word = pTokenS s <|> pTokenS (s <> "s")
+        wordGroup l = P.choice (word <$> l)
+
 printStatus :: MonadIO m => Status -> m ()
 printStatus status = putTextLn' (name <> ": " <> text)
   where name = status ^. statusUser . userScreenName
@@ -141,6 +159,11 @@ processTimeline myName (SStatus status) = do
           postReplyR sName msg sId
           putTextLn' "---------- replied"
 
+      , do
+        reply <- randomFiber =<< parseMews message
+        --postReplyR sName (mconcat reply) sId
+        print (mconcat reply)
+        putTextLn' "---------- replied"
       ]
 
   where sName = status ^. statusUser . userScreenName
