@@ -8,7 +8,7 @@ opts.add_argument(
     help="Twitter handle",
 )
 args = opts.parse_args()
-name = args.NAME
+name = args.NAME[0]
 
 encoding = locale.getpreferredencoding()
 count = 200
