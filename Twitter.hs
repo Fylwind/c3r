@@ -2,13 +2,18 @@
     ConstraintKinds
   , FlexibleContexts
   , FlexibleInstances
-  , OverloadedStrings #-}
+  , NoMonomorphismRestriction
+  , OverloadedStrings
+  , RankNTypes #-}
 module Twitter
   ( -- * Main module
     module Twitter
     -- * Re-exports
   , TWInfo
   , TwitterError(..)
+  , UserParam(..)
+  , friendsList
+  , sourceWithCursor
   , twitterErrorMessage
   ) where
 import Prelude ()
@@ -19,7 +24,9 @@ import Control.Lens
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader)
 import Control.Monad.Trans.Resource (MonadResource, ResourceT)
-import Data.Conduit (($$+-))
+import Data.Aeson (FromJSON)
+import Data.Conduit (($$), ($$+-))
+import Data.Conduit.List (consume)
 import Data.Default (def)
 import Network.HTTP.Conduit
 import Web.Authenticate.OAuth (OAuth(..), Credential(..))
@@ -30,6 +37,31 @@ import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Conduit.List as C
 import qualified Data.List as List
 import qualified Web.Authenticate.OAuth as OAuth
+
+type ListAPI a c s = (FromJSON s, CursorKey c,
+                      HasCursorParam (APIRequest a (WithCursor c s)))
+
+getList :: (MonadTwitter r m, ListAPI a c s) =>
+           APIRequest a (WithCursor c s) -> m [s]
+getList what = do
+  tw  <- view twitter
+  mgr <- view manager
+  sourceWithCursor tw mgr what $$ consume
+
+getFriendIds :: MonadTwitter r m => Text -> m [Integer]
+getFriendIds = getList . friendsIds . ScreenNameParam . Text.unpack
+
+getFollowerIds :: MonadTwitter r m => Text -> m [Integer]
+getFollowerIds = getList . followersIds . ScreenNameParam . Text.unpack
+
+getUsersById :: MonadTwitter r m => [Integer] -> m [User]
+getUsersById ids = do
+  tw  <- view twitter
+  mgr <- view manager
+  call tw mgr (usersLookup (UserIdListParam ids))
+
+getUsersById_max :: Int
+getUsersById_max = 100
 
 -- | 'Monad' within which HTTP operations may be performed.
 type ManagerM a = ReaderT Manager (ResourceT IO) a
@@ -66,10 +98,13 @@ instance HasTwitter TWInfo where
 instance HasTwitter (TWInfo, a) where
   twitter = _1
 
+-- | Run the 'ManagerM' monad.
+runManagerM :: MonadIO m => ManagerM a -> m a
+runManagerM action = liftIO (withManager (runReaderT action))
+
 -- | Run the 'TwitterM' monad.
-runTwitterM :: MonadIO m => ManagerM TWInfo -> TwitterM () -> m ()
-runTwitterM getTwit action = liftIO . withManager $ \ mgr -> do
-  tw <- runReaderT getTwit mgr
+runTwitterM :: MonadIO m => TWInfo -> TwitterM a -> m a
+runTwitterM tw action = liftIO . withManager $ \ mgr ->
   runReaderT action (tw, mgr)
 
 oauth :: OAuth

@@ -1,0 +1,7 @@
+#!/bin/sh
+ulimit -v 250000
+while :
+do
+    printf '%s\n' '-- Restarting --'
+    c3r 2>&1
+done | ts '%F %T %Z' | tee -a "$HOME"/c3r.log
