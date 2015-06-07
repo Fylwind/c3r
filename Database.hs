@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleInstances, OverloadedStrings, TypeSynonymInstances #-}
+{-# LANGUAGE DeriveDataTypeable, FlexibleInstances, OverloadedStrings,
+             TypeSynonymInstances #-}
 module Database
        ( module Database
        , SQLiteHandle

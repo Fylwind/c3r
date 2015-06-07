@@ -1,4 +1,5 @@
-{-# LANGUAGE ConstraintKinds, FlexibleContexts, OverloadedStrings, ViewPatterns #-}
+{-# LANGUAGE ConstraintKinds, DeriveDataTypeable, FlexibleContexts,
+             OverloadedStrings, ViewPatterns #-}
 module Main (main) where
 import Prelude ()
 import Common
