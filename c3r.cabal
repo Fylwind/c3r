@@ -44,6 +44,7 @@ executable c3r
                      , directory
                      , filepath
                      , hashable
+                     , http-types
                      , http-conduit
                      , lens
                      , lifted-base

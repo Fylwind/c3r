@@ -23,6 +23,8 @@ import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import qualified Network.HTTP.Conduit as HTTP
+import qualified Network.HTTP.Types.Header as HTTP
 import qualified Text.Parsec as P
 
 newtype Abort = Abort String deriving (Show, Typeable)
@@ -51,7 +53,7 @@ main = do
 
       -- start doing stuff
       myName <- getMyName
-      listLogger git myName
+      listLogger db git myName
       autorestart 1 (userStream (processTimeline git db myName))
 
 -- | Automatically restart if the action fails (after the given delay).
@@ -66,25 +68,12 @@ autorestart delay action = do
       sleepSec delay
       autorestart delay action
 
-updateUserWithoutCommit :: MonadIO m => Git -> User -> m ()
-updateUserWithoutCommit git user = do
-  gitAddFile git ("users/" <> show (user ^. userId)) (prettyJson user)
-
-prettyJson :: ToJSON a => a -> ByteString
-prettyJson =
-  ByteStringL.toStrict .
-  JP.encodePretty' JP.Config { JP.confIndent = 4, JP.confCompare = compare }
-
-updateUser :: MonadIO m => Git -> User -> m ()
-updateUser git user = do
-  updateUserWithoutCommit git user
-  gitCommit git "Streamed update"
-
 listLogFrequency :: Num a => a
 listLogFrequency = 3600
 
-listLogger :: MonadTwitter r m => Git -> Text -> m ()
-listLogger git myName = void . fork . autorestart 60 . forever $ do
+listLogger :: MonadTwitter r m =>
+              SQLiteHandle -> Git -> Text -> m ()
+listLogger db git myName = void . fork . autorestart 60 . forever $ do
   friendIds'   <- getFriendIds   myName
   followerIds' <- getFollowerIds myName
   let friendIds   = Set.fromList friendIds'
@@ -97,9 +86,75 @@ listLogger git myName = void . fork . autorestart 60 . forever $ do
   for_ (chunkify getUsersById_max (Set.toList userIds)) $ \ userIds' -> do
     users <- getUsersById userIds'
     for_ users $ \ user -> do
-      updateUserWithoutCommit git user
+      updateUserWithoutCommit db git user
   gitCommit git "Scheduled update"
   sleepSec listLogFrequency
+
+updateUserWithoutCommit :: MonadManager r m =>
+                           SQLiteHandle -> Git -> User -> m ()
+updateUserWithoutCommit db git user = do
+  user' <- userURL (traverse (dereferenceUrl db)) user
+  gitAddFile git ("users/" <> show (user ^. userId)) (prettyJson (strip user'))
+  where strip user' = (`mapJSONObject` toJSON user') $
+                      deleteKeysFromMap skippedUserKeys
+
+dereferenceUrl :: MonadManager r m => SQLiteHandle -> Text -> m Text
+dereferenceUrl db url | not (isShort url) = return url
+                      | otherwise         = deref url
+  where
+
+    isShort url = Text.isPrefixOf "http://t.co/"  url ||
+                  Text.isPrefixOf "https://t.co/" url
+
+    getCachedValue key = do
+      result <- tryWith (undefined :: DatabaseError) $
+                sqlExec db ["key" =. toSQLiteValue key]
+                "SELECT (value) FROM url_cache WHERE key = :key;"
+      return $ case result of
+        Right [[[(_, x)]]] -> fromSQLiteValue x
+        _                  -> Nothing
+
+    setCachedValue key value = do
+      sqlExec_ db ["key" =. toSQLiteValue key, "value" =. toSQLiteValue value]
+        "INSERT OR REPLACE INTO url_cache (key, value) VALUES (:key, :value);"
+
+    deref url = do
+      result <- getCachedValue url
+      case result of
+        Just url' -> return url'
+        Nothing   -> do
+          result' <- findRedirect url
+          case result' of
+            Nothing -> return url
+            Just url' -> do
+              setCachedValue url url'
+              return url'
+
+findRedirect :: MonadManager r m => Text -> m (Maybe Text)
+findRedirect url = do
+  mgr <- view manager
+  request <- HTTP.parseUrl (Text.unpack url)
+  let request' = request { HTTP.redirectCount = 0
+                         , HTTP.checkStatus = \_ _ _ -> Nothing }
+  response <- tryAny (HTTP.httpLbs request' mgr)
+  return $
+    eitherToMaybe . Text.decodeUtf8' =<<
+    List.lookup HTTP.hLocation . HTTP.responseHeaders =<<
+    eitherToMaybe response
+
+initializeUrlCacheTable :: MonadIO m => SQLiteHandle -> m ()
+initializeUrlCacheTable db =
+  createTable db "url_cache" ["key TEXT PRIMARY KEY", "value"]
+
+prettyJson :: ToJSON a => a -> ByteString
+prettyJson =
+  ByteStringL.toStrict .
+  JP.encodePretty' JP.Config { JP.confIndent = 4, JP.confCompare = compare }
+
+updateUser :: MonadManager r m => SQLiteHandle -> Git -> User -> m ()
+updateUser db git user = do
+  updateUserWithoutCommit db git user
+  gitCommit git "Streamed update"
 
 ensureDirectoryExist :: MonadIO m => FilePath -> m FilePath
 ensureDirectoryExist dir = do
@@ -117,8 +172,8 @@ getVariable db key = liftIO $ do
             sqlExec db ["key" =. SQL.Text key]
             "SELECT value FROM meta WHERE key = :key"
   case result of
-    Right [[[("value", x)]]] -> return (fromSQLiteValue x)
-    _                        -> return Nothing
+    Right [[[(_, x)]]] -> return (fromSQLiteValue x)
+    _                  -> return Nothing
 
 setVariable :: (MonadIO m, SQLiteValue a) =>
                SQLiteHandle -> String -> a -> m ()
@@ -138,7 +193,7 @@ data DStatus =
   , ds_userId :: Integer
   , ds_id :: Integer
   , ds_text :: Text
-  , ds_data :: ByteString
+  , ds_data :: JSON.Value
   , ds_replyUserId :: Maybe Integer
   , ds_replyStatusId :: Maybe Integer
   , ds_rtUserId :: Maybe Integer
@@ -183,6 +238,10 @@ skippedStatusKeys = ["user", "id", "text",
 skippedRtKeys :: [Text]
 skippedRtKeys = ["user", "id"]
 
+-- strip the data that we don't care / change too frequently
+skippedUserKeys :: [Text]
+skippedUserKeys = ["id", "follow_request_sent", "following", "notifications"]
+
 makeDStatus :: UTCTime -> Status -> DStatus
 makeDStatus time status =
   DStatus
@@ -196,7 +255,6 @@ makeDStatus time status =
   Nothing
   Nothing
   where statusDump =
-          ByteStringL.toStrict . JSON.encode .
           (`mapJSONObject` toJSON status) $
           deleteKeysFromMap skippedStatusKeys
 
@@ -212,7 +270,6 @@ makeDRtStatus time rt =
   , ds_data     = statusDump
   }
   where statusDump =
-          ByteStringL.toStrict . JSON.encode .
           (`mapJSONObject` toJSON rt) $
           deleteKeysFromMap skippedRtKeys .
           (flip Map.adjust "retweeted_status" . mapJSONObject $
@@ -264,6 +321,7 @@ upgradeDatabase db confDir = liftIO $ do
       initializeVariableTable db
 
       -- create various tables
+      initializeUrlCacheTable db
       createTable db "log" ["time", "message"]
       createTable db "statuses" fieldNames_DStatus
       createTable db "deletes"  fieldNames_DDelete
@@ -352,18 +410,18 @@ processTimeline git db myName streamEvent = do
   case streamEvent of
     SRetweetedStatus rt -> do
       void . fork $ do
-        updateUser git (rt ^. rsRetweetedStatus . statusUser)
-        updateUser git (rt ^. rsUser)
+        updateUser db git (rt ^. rsRetweetedStatus . statusUser)
+        updateUser db git (rt ^. rsUser)
       insertRow db "statuses" (makeDRtStatus now rt)
     SStatus status -> do
       void . fork $ do
-        updateUser git (status ^. statusUser)
+        updateUser db git (status ^. statusUser)
       insertRow db "statuses" (makeDStatus now status)
       statusHandler db myName status
-    SEvent event -> do
+    SEvent _ -> do
       insertRow db "other_events"
         ["time" =. toSQLiteValue now,
-         "data" =. toSQLiteValue (show event)]
+         "data" =. toSQLiteValue (toJSON streamEvent)]
     SDelete delete -> do
       insertRow db "deletes" (makeDDelete now delete)
     SFriends _ -> do

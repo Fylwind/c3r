@@ -9,6 +9,7 @@ module Twitter
   ( -- * Main module
     module Twitter
     -- * Re-exports
+  , Manager
   , TWInfo
   , TwitterError(..)
   , UserParam(..)
