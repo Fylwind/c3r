@@ -33,4 +33,5 @@ gitCommit (Git dir) message = liftIO . withDir dir $ do
   shortstat <- readProcess "git" ["diff", "--cached", "--shortstat"] ""
   -- don't commit if there's nothing to do
   when (shortstat /= "") $ do
-    callProcess "git" ["commit", "-m", message, "-q"]
+    callProcess "git" ["commit", "-m", message, "-q"] `finally` do
+      print("shortstat=",shortstat)

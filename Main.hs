@@ -185,8 +185,8 @@ setVariable db key value =
 logMessage :: MonadIO m => SQLiteHandle -> String -> m ()
 logMessage db message = do
   now <- liftIO getCurrentTime
-  insertRow db "meta" ["time" =. toSQLiteValue now,
-                       "message" =. toSQLiteValue message]
+  insertRow db "log" ["time" =. toSQLiteValue now,
+                      "message" =. toSQLiteValue message]
 
 data DStatus =
   DStatus
