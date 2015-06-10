@@ -1,0 +1,12 @@
+#!/bin/sh
+top=`git rev-parse --show-toplevel`
+color=never
+if [ -t 1 ]
+then
+    num_colors=`tput colors`
+    if [ "$num_colors" ] && [ "$num_colors" -ge 8 ]
+    then color=always
+    fi
+fi
+parent=`dirname "$0"`
+git log --color="$color" "$@" | python "$parent/c3r-diff.py" "$top/users" | less -R
