@@ -1,6 +1,8 @@
 set -e
 cabal build
-ssh vm-deb 'cd c3r && cabal build'
+ssh vm-deb <<EOF
+cd c3r && git pull && git submodule update && cabal build
+EOF
 scp vm-deb:c3r/dist/build/c3r/c3r .
 rsync -vPz c3r tails:/usr/local/bin/c3r
 ssh tails 'pkill -x c3r'
