@@ -5,7 +5,10 @@ import System.Directory
 import System.FilePath
 import System.Process
 
-newtype Git = Git FilePath
+data Git = Git { git_dir :: FilePath, git_lock :: MVar () }
+
+withGit :: MonadIO m => Git -> IO a -> m a
+withGit (Git dir lock) = liftIO . withMVar lock . pure . withDir dir
 
 -- | Initialize the path as a git repository.
 --   Does nothing if already initialized.
@@ -16,11 +19,12 @@ gitInit dir = liftIO $ do
     callProcess "git" ["init", "-q"]
     callProcess "git" ["config", "user.name", "Bot"]
     callProcess "git" ["config", "user.email", "<bot@nowhere>"]
-  return (Git dir)
+  lock <- newEmptyMVar
+  return (Git dir lock)
 
 -- | Add a file with the give relative path and contents and stage it.
 gitAddFile :: MonadIO m => Git -> FilePath -> ByteString -> m ()
-gitAddFile (Git dir) name contents = liftIO . withDir dir $ do
+gitAddFile git name contents = withGit git $ do
   createDirectoryIfMissing True (takeDirectory name)
   writeFileB tmpName contents
   renameFile tmpName name
@@ -29,9 +33,9 @@ gitAddFile (Git dir) name contents = liftIO . withDir dir $ do
 
 -- | Commit all the staged changes.  Does nothing if there are no changes.
 gitCommit :: MonadIO m => Git -> String -> m ()
-gitCommit (Git dir) message = liftIO . withDir dir $ do
+gitCommit git message = withGit git $ do
   shortstat <- readProcess "git" ["diff", "--cached", "--shortstat"] ""
   -- don't commit if there's nothing to do
   when (shortstat /= "") $ do
-    callProcess "git" ["commit", "-m", message, "-q"] `finally` do
+    callProcess "git" ["commit", "-m", message, "-q"] `onException`
       print("shortstat=",shortstat)
