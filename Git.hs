@@ -19,7 +19,7 @@ gitInit dir = liftIO $ do
     callProcess "git" ["init", "-q"]
     callProcess "git" ["config", "user.name", "Bot"]
     callProcess "git" ["config", "user.email", "<bot@nowhere>"]
-  lock <- newEmptyMVar
+  lock <- newMVar ()
   return (Git dir lock)
 
 -- | Add a file with the give relative path and contents and stage it.
