@@ -1,0 +1,22 @@
+#!/bin/sh
+# workaround because twitter-conduit bounds are too restrictive
+cabal exec -- sh -c '
+mkdir -p dist &&
+cd dist &&
+{ [ -d twitter-conduit-* ] || cabal get twitter-conduit; } &&
+cd twitter-conduit-* &&
+{ patch -N -p 0 || :; } &&
+cabal install
+' <<EOF
+--- twitter-conduit.cabal
++++ twitter-conduit.cabal
+@@ -75,7 +75,7 @@
+   if flag(lens-aeson)
+     build-depends:
+         lens-aeson >= 1
+-      , lens >= 4.4 && < 4.8
++      , lens >= 4.4
+   else
+     build-depends:
+         lens >= 4.0 && < 4.4
+EOF
