@@ -1,14 +1,10 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleInstances, OverloadedStrings,
              TypeSynonymInstances #-}
-module Database
-       ( module Database
-       , SQLiteHandle
-       ) where
+module Database where
 import Prelude ()
 import Common
 import Data.Int (Int64)
 import Data.Time (UTCTime)
-import Database.SQLite (SQLiteHandle)
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Encode as JSON
 import qualified Data.ByteString.Lazy as BytesL
@@ -21,6 +17,12 @@ import qualified Database.SQLite as SQL
 
 newtype DatabaseError = DatabaseError String deriving (Show, Typeable)
 instance Exception DatabaseError
+
+data Database =
+  Database
+  { db_handle :: SQL.SQLiteHandle
+  , db_lock   :: Maybe (MVar ())
+  }
 
 class SQLiteValue a where
   fromSQLiteValue :: SQL.Value -> Maybe a
@@ -114,42 +116,58 @@ boundedFromIntegral i
   | otherwise                                         = Nothing
   where i' = fromIntegral i
 
-withConnection :: String -> (SQLiteHandle -> IO c) -> IO c
-withConnection name = bracket (SQL.openConnection name) SQL.closeConnection
+withConnection :: String -> (Database -> IO c) -> IO c
+withConnection name = bracket initialize finalize
+  where initialize = Database <$> SQL.openConnection name
+                              <*> (Just <$> newMVar ())
+        finalize   = SQL.closeConnection . db_handle
+
+-- | [Internal] Execute an 'IO' action while the locking the database.
+withLock :: MonadIO m => Database -> (SQL.SQLiteHandle -> IO a) -> m a
+withLock (Database conn Nothing)     = liftIO .                        ($ conn)
+withLock (Database conn (Just lock)) = liftIO . withMVar lock . pure . ($ conn)
+
+-- | [Internal] Hide the lock from the 'Database' object so that any function
+--   that uses this object will not lock.  (This is allows nesting of
+--   operations.)
+hideLock :: Database -> Database
+hideLock db = db{db_lock = Nothing}
 
 sqlExec' :: (MonadIO m, SQL.SQLiteResult a) =>
-            SQLiteHandle -> String -> m [[SQL.Row a]]
-sqlExec' conn stmt =
-  liftIO $ throwIfLeft DatabaseError =<< SQL.execStatement conn stmt
+            Database -> String -> m [[SQL.Row a]]
+sqlExec' db stmt = withLock db $ \ conn ->
+  throwIfLeft DatabaseError =<< SQL.execStatement conn stmt
 
-sqlExec_' :: MonadIO m => SQLiteHandle -> String -> m ()
-sqlExec_' conn stmt =
-  liftIO $ throwIfJust DatabaseError =<< SQL.execStatement_ conn stmt
+sqlExec_' :: MonadIO m => Database -> String -> m ()
+sqlExec_' db stmt = withLock db $ \ conn ->
+  throwIfJust DatabaseError =<< SQL.execStatement_ conn stmt
 
 sqlExec :: (MonadIO m, SQLiteRecord r, SQL.SQLiteResult a) =>
-           SQLiteHandle -> r -> String -> m [[SQL.Row a]]
-sqlExec conn params stmt =
-  liftIO $ throwIfLeft DatabaseError =<<
-           SQL.execParamStatement conn stmt
-             (mapFst (":" <>) <$> toSQLiteRecord params)
+           Database -> r -> String -> m [[SQL.Row a]]
+sqlExec db params stmt = withLock db $ \ conn ->
+  throwIfLeft DatabaseError =<<
+  SQL.execParamStatement conn stmt
+    (mapFst (":" <>) <$> toSQLiteRecord params)
 
 sqlExec_ :: (MonadIO m, SQLiteRecord r) =>
-            SQLiteHandle -> r -> String -> m ()
-sqlExec_ conn params stmt =
-  liftIO $ throwIfJust DatabaseError =<<
-           SQL.execParamStatement_ conn stmt
-             (mapFst (":" <>) <$> toSQLiteRecord params)
+            Database -> r -> String -> m ()
+sqlExec_ db params stmt = withLock db $ \ conn ->
+  throwIfJust DatabaseError =<<
+  SQL.execParamStatement_ conn stmt
+    (mapFst (":" <>) <$> toSQLiteRecord params)
 
 insertRow :: (MonadIO m, SQLiteRecord r) =>
-             SQLiteHandle -> String -> r -> m ()
-insertRow conn tableName record =
-  sqlExec_ conn record' $
+             Database -> String -> r -> m Integer
+insertRow db tableName record = withLock db $ \ conn -> do
+  sqlExec_ db' record' $
     "INSERT INTO " <> tableName <> " (" <> List.intercalate ", " fields <>
     ") VALUES (" <> List.intercalate ", " ((":" <>) <$> fields) <> ");"
+  SQL.getLastRowID (db_handle db')
   where fields  = fst <$> record'
         record' = toSQLiteRecord record
+        db'     = hideLock db
 
-createTable :: MonadIO m => SQLiteHandle -> String -> [String] -> m ()
-createTable conn name fields =
-  sqlExec_' conn ("CREATE TABLE IF NOT EXISTS " <> name <>
-                  " (" <> intercalate ", " fields <> ");")
+createTable :: MonadIO m => Database -> String -> [String] -> m ()
+createTable db name fields =
+  sqlExec_' db ("CREATE TABLE IF NOT EXISTS " <> name <>
+                " (" <> intercalate ", " fields <> ");")

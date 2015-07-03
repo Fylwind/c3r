@@ -11,10 +11,12 @@ import Calico.Base
 import Calico.MonadIOControl
 import Calico.ByteString.MonadIO
 import Calico.Text.MonadIO
+import Data.Time (UTCTime)
 import System.Directory
 import System.Random (Random)
 import qualified Data.List as List
 import qualified Data.Text as Text
+import qualified Data.Time as Time
 import qualified System.Random as Random
 
 eitherToMaybe :: Either b a -> Maybe a
@@ -67,6 +69,9 @@ randomFiber (choices : rest) = do
   index <- randomRIO (0, length choices - 1)
   rest' <- randomFiber rest
   pure (choices !! index : rest')
+
+getCurrentTime :: MonadIO m => m UTCTime
+getCurrentTime = liftIO Time.getCurrentTime
 
 -- | Perform the given action with a different working directory.
 withDir :: FilePath -> IO a -> IO a

@@ -10,7 +10,7 @@ import Twitter
 import Control.Lens
 import Data.Aeson (ToJSON, toJSON)
 import Data.Hashable (Hashable)
-import Data.Time (UTCTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime)
 import System.Directory
 import System.FilePath
 import Web.Twitter.Types.Lens
@@ -79,7 +79,7 @@ listLogFrequency :: Num a => a
 listLogFrequency = 3600
 
 listLogger :: MonadTwitter r m =>
-              SQLiteHandle -> Git -> Text -> m ()
+              Database -> Git -> Text -> m ()
 listLogger db git myName = void . fork . autorestart 60 . forever $ do
   friendIds'   <- getFriendIds   myName
   followerIds' <- getFollowerIds myName
@@ -99,14 +99,14 @@ listLogger db git myName = void . fork . autorestart 60 . forever $ do
   sleepSec listLogFrequency
 
 updateUserWithoutCommit :: MonadManager r m =>
-                           SQLiteHandle -> Git -> User -> m ()
+                           Database -> Git -> User -> m ()
 updateUserWithoutCommit db git user = do
   user' <- userURL (traverse (dereferenceUrl db)) user
   gitAddFile git ("users/" <> show (user ^. userId)) (prettyJson (strip user'))
   where strip user' = (`mapJSONObject` toJSON user') $
                       deleteKeysFromMap skippedUserKeys
 
-dereferenceUrl :: MonadManager r m => SQLiteHandle -> Text -> m Text
+dereferenceUrl :: MonadManager r m => Database -> Text -> m Text
 dereferenceUrl db url | not (isShort url) = pure url
                       | otherwise         = deref url
   where
@@ -150,7 +150,7 @@ findRedirect url = do
     List.lookup HTTP.hLocation . HTTP.responseHeaders =<<
     eitherToMaybe response
 
-initializeUrlCacheTable :: MonadIO m => SQLiteHandle -> m ()
+initializeUrlCacheTable :: MonadIO m => Database -> m ()
 initializeUrlCacheTable db =
   createTable db "url_cache" ["key TEXT PRIMARY KEY", "value"]
 
@@ -159,7 +159,7 @@ prettyJson =
   ByteStringL.toStrict .
   JP.encodePretty' JP.Config { JP.confIndent = 4, JP.confCompare = compare }
 
-updateUser :: MonadManager r m => SQLiteHandle -> Git -> User -> m ()
+updateUser :: MonadManager r m => Database -> Git -> User -> m ()
 updateUser db git user = do
   updateUserWithoutCommit db git user
   gitCommit git "Streamed update"
@@ -169,12 +169,12 @@ ensureDirectoryExist dir = do
   liftIO (createDirectoryIfMissing True dir)
   pure dir
 
-initializeVariableTable :: MonadIO m => SQLiteHandle -> m ()
+initializeVariableTable :: MonadIO m => Database -> m ()
 initializeVariableTable db =
   createTable db "meta" ["key TEXT PRIMARY KEY", "value"]
 
 getVariable :: (MonadIO m, SQLiteValue a) =>
-               SQLiteHandle -> String -> m (Maybe a)
+               Database -> String -> m (Maybe a)
 getVariable db key = liftIO $ do
   result <- tryWith (undefined :: DatabaseError) $
             sqlExec db ["key" =. SQL.Text key]
@@ -184,16 +184,17 @@ getVariable db key = liftIO $ do
     _                  -> Nothing
 
 setVariable :: (MonadIO m, SQLiteValue a) =>
-               SQLiteHandle -> String -> a -> m ()
+               Database -> String -> a -> m ()
 setVariable db key value =
   sqlExec_ db ["key" =. SQL.Text key, "value" =. toSQLiteValue value]
     "INSERT OR REPLACE INTO meta (key, value) VALUES (:key, :value);"
 
-logMessage :: MonadIO m => SQLiteHandle -> String -> m ()
+logMessage :: MonadIO m => Database -> String -> m ()
 logMessage db message = do
-  now <- liftIO getCurrentTime
-  insertRow db "log" ["time" =. toSQLiteValue now,
-                      "message" =. toSQLiteValue message]
+  now <- getCurrentTime
+  void $ insertRow db "log"
+    [ "time"    =. toSQLiteValue now
+    , "message" =. toSQLiteValue message]
 
 data DStatus =
   DStatus
@@ -315,7 +316,7 @@ makeDDelete time delete =
   (delete ^. delUserId)
   (delete ^. delId)
 
-upgradeDatabase :: MonadIO m => SQLiteHandle -> FilePath -> m ()
+upgradeDatabase :: MonadIO m => Database -> FilePath -> m ()
 upgradeDatabase db confDir = liftIO $ do
   version <- fromMaybe 0 <$> getVariable db "version"
   when (version /= currentVersion) $ do
@@ -323,9 +324,10 @@ upgradeDatabase db confDir = liftIO $ do
   where
 
     currentVersion :: Int
-    currentVersion = 1
+    currentVersion = 2
 
     upgradeFrom 0 = do
+      let version = 1 :: Int
       initializeVariableTable db
 
       -- create various tables
@@ -346,13 +348,20 @@ upgradeDatabase db confDir = liftIO $ do
         _ -> pure ()
 
       -- upgrade done
-      setVariable db "version" currentVersion
+      setVariable db "version" version
       putStrLn' "database initialized."
 
       -- cleanup
       removeFile keysFile `catchIOError` \ _ -> pure mempty
 
       where keysFile = confDir </> "keys"
+
+    upgradeFrom 1 = do
+      let version = 2 :: Int
+      createTable db "scheduled" ["time", "type", "data"]
+      setVariable db "version" version
+      putStrLn' ("database upgraded to version " <> show version <> ".")
+
 
     upgradeFrom v = throwIO (Abort ("unknown database version: " <> show v))
 
@@ -412,45 +421,52 @@ sleepSec :: MonadIO m => Double -> m ()
 sleepSec = liftIO . threadDelay . round . (1e6 *)
 
 processTimeline :: MonadTwitter r m =>
-                   Git -> SQLiteHandle -> Text -> StreamingAPI -> m ()
+                   Git -> Database -> Text -> StreamingAPI -> m ()
 processTimeline git db myName streamEvent = do
-  now <- liftIO getCurrentTime
+  now <- getCurrentTime
   case streamEvent of
     SRetweetedStatus rt -> do
       void . fork $ do
         updateUser db git (rt ^. rsRetweetedStatus . statusUser)
         updateUser db git (rt ^. rsUser)
-      insertRow db "statuses" (makeDRtStatus now rt)
+      void $ insertRow db "statuses" (makeDRtStatus now rt)
     SStatus status -> do
       void . fork $ do
         updateUser db git (status ^. statusUser)
-      insertRow db "statuses" (makeDStatus now status)
+      void $ insertRow db "statuses" (makeDStatus now status)
       statusHandler db myName status
     SEvent _ -> do
-      insertRow db "other_events"
+      void $ insertRow db "other_events"
         ["time" =. toSQLiteValue now,
          "data" =. toSQLiteValue (toJSON streamEvent)]
     SDelete delete -> do
-      insertRow db "deletes" (makeDDelete now delete)
+      void $ insertRow db "deletes" (makeDDelete now delete)
     SFriends _ -> do
       pure () -- ignore
     SUnknown event ->
-      insertRow db "other_events"
+      void $ insertRow db "other_events"
         ["time" =. toSQLiteValue now,
          "data" =. toSQLiteValue event]
 
-statusHandler :: MonadTwitter r m => SQLiteHandle -> Text -> Status -> m ()
+scheduleTask :: SQLiteValue a => Database -> a -> IO ()
+scheduleTask db = _
+
+rescheduleTasks :: Database -> IO ()
+rescheduleTasks db = _
+
+taskRunner :: SQL.Value -> IO ()
+taskRunner task = _
+
+statusHandler :: MonadTwitter r m => Database -> Text -> Status -> m ()
 statusHandler db myName status = fromMaybe (pure ()) $ do
   (name, _, message) <- parseStatusText sText
   guard (name == myName)
   pure $ runHandlers
     [ if message == ":3"
       then pure . void . fork $ do
-        let coeff = 60 -- seconds
-        factor <- randomRIO (0.01, 15 :: Double)
-        let delay = coeff * factor
-        logMessage db ("replying " <> show sId <>
-                       " in " <> show delay <> " sec")
+        delay <- randomRIO (0.01 * 60, 15 * 60 :: Double)
+        scheduledTime <- addUTCTime (realToFrac delay) <$> getCurrentTime
+        logMessage db ("replying " <> show sId <> " at " <> show scheduledTime)
         sleepSec delay
         postReplyR sName ":3" sId
         logMessage db ("replied to " <> show sId)
