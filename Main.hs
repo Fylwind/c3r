@@ -89,6 +89,7 @@ listLogger db git myName = void . fork . autorestart 60 . forever $ do
     for_ users $ \ user -> do
       updateUserWithoutCommit db git user
   gitCommit git "Scheduled update"
+  gitGC git
   sleepSec listLogFrequency
 
 updateUserWithoutCommit :: MonadManager r m =>

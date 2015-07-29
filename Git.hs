@@ -39,3 +39,8 @@ gitCommit git message = withGit git $ do
   when (shortstat /= "") $ do
     callProcess "git" ["commit", "-m", message, "-q"] `onException`
       print("shortstat=",shortstat)
+
+-- | Garbage collection.
+gitGC :: MonadIO m => Git -> m ()
+gitGC git = withGit git $ do
+  callProcess "git" ["gc", "--auto", "--quiet"]
