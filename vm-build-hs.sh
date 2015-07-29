@@ -27,13 +27,16 @@ escape() {
 }
 
 escape app
-ssh "$vm" <<EOF
+ssh -T "$vm" <<EOF
 cd $app_
 git fetch -p origin
 git reset --hard origin/master
 git submodule update
 cabal build --ghc-options=-optl-static
 EOF
+echo 'Built.'
 rsync -aPvz "$vm:$app/dist/build/$app/$app" "/tmp/$app"
 rsync -aPvz "/tmp/$app" "$srv:/usr/local/bin/$app"
-ssh "$srv" pkill -x "$app"
+echo 'Copied executable.'
+ssh -T "$srv" pkill -x "$app"
+echo 'Restarted daemon.'
