@@ -55,6 +55,8 @@ main = do
       -- start doing stuff
       myName <- getMyName
       listLogger db git myName
+      periodicGitGC git
+      periodicGitGCAgg git
       autorestart 1 (userStream (processTimeline git db myName))
 
 -- | Automatically restart if the action fails (after the given delay).
@@ -68,6 +70,16 @@ autorestart delay action = do
       hPutStr' stderr (show e)
       sleepSec delay
       autorestart delay action
+
+periodicGitGC :: (MonadIO m, MonadBaseControl IO m) => Git -> m ()
+periodicGitGC git = void . fork . autorestart 60 . forever $ do
+  gitGC git
+  sleepSec (6 * 3600)
+
+periodicGitGCAgg :: (MonadIO m, MonadBaseControl IO m) => Git -> m ()
+periodicGitGCAgg git = void . fork . autorestart 60 . forever $ do
+  gitGCAgg git
+  sleepSec (72 * 3600)
 
 listLogFrequency :: Num a => a
 listLogFrequency = 3600

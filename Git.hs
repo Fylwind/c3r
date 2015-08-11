@@ -43,4 +43,9 @@ gitCommit git message = withGit git $ do
 -- | Garbage collection.
 gitGC :: MonadIO m => Git -> m ()
 gitGC git = withGit git $ do
-  callProcess "git" ["gc", "--auto", "--quiet"]
+  callProcess "git" ["gc", "--quiet"]
+
+-- | Garbage collection.
+gitGCAgg :: MonadIO m => Git -> m ()
+gitGCAgg git = withGit git $ do
+  callProcess "git" ["gc", "--aggressive", "--quiet"]

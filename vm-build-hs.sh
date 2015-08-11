@@ -26,12 +26,19 @@ escape() {
     eval "$1"'_=$_1'
 }
 
+# apt-get install libsqlite3-dev
+# git clone --recursive https://github.com/Fylwind/c3r
+
+scp Keys.hs "$vm:$app/Keys.hs"
 escape app
 ssh -T "$vm" <<EOF
+set -e
 cd $app_
 git fetch -p origin
 git reset --hard origin/master
 git submodule update
+cabal sandbox init
+cabal install --dependencies-only
 cabal build --ghc-options=-optl-static
 EOF
 echo 'Built.'
