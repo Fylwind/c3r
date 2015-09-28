@@ -12,7 +12,7 @@ def find_user(user_id):
 
 s = sys.stdin.read()
 for line in s.strip().split("\n"):
-    m = re.match("(.*(?:users/|[ +-](?:\033\\[[0-9;]*m)*))([0-9]+)(.*)$", line)
+    m = re.match(r"(.*(?:users/|[ +-](?:\x1b\[[\d;]*m)*))(\d+)(.*)$", line)
     if m:
         l1, user_id, l2 = m.groups()
         print(l1 + find_user(user_id) + l2)
