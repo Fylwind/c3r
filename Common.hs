@@ -39,11 +39,11 @@ showT = Text.pack . show
 
 throwIfLeft :: (MonadIO m, Exception e) => (b -> e) -> Either b a -> m a
 throwIfLeft f (Left  e) = liftIO (throwIO (f e))
-throwIfLeft _ (Right x) = return x
+throwIfLeft _ (Right x) = pure x
 
 throwIfJust :: (MonadIO m, Exception e) => (b -> e) -> Maybe b -> m ()
 throwIfJust f (Just  e) = liftIO (throwIO (f e))
-throwIfJust _ Nothing   = return ()
+throwIfJust _ Nothing   = pure ()
 
 tryAny :: MonadBaseControl IO m => m a -> m (Either SomeException a)
 tryAny action = do
@@ -62,11 +62,11 @@ randomDouble :: MonadIO m => (Double, Double) -> m Double
 randomDouble = randomRIO
 
 randomFiber :: MonadIO m => [[a]] -> m [a]
-randomFiber []               = return []
+randomFiber []               = pure []
 randomFiber (choices : rest) = do
   index <- randomRIO (0, length choices - 1)
   rest' <- randomFiber rest
-  return (choices !! index : rest')
+  pure (choices !! index : rest')
 
 -- | Perform the given action with a different working directory.
 withDir :: FilePath -> IO a -> IO a

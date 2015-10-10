@@ -20,7 +20,7 @@ gitInit dir = liftIO $ do
     callProcess "git" ["config", "user.name", "Bot"]
     callProcess "git" ["config", "user.email", "<bot@nowhere>"]
   lock <- newMVar ()
-  return (Git dir lock)
+  pure (Git dir lock)
 
 -- | Add a file with the give relative path and contents and stage it.
 gitAddFile :: MonadIO m => Git -> FilePath -> ByteString -> m ()

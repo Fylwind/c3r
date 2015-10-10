@@ -65,7 +65,7 @@ autorestart :: (MonadIO m, MonadBaseControl IO m) => Double -> m b -> m b
 autorestart delay action = do
   result <- tryAny action
   case result of
-    Right x -> return x
+    Right x -> pure x
     Left  e -> do
       hPutStr' stderr (show e)
       sleepSec delay
@@ -113,7 +113,7 @@ updateUserWithoutCommit db git user = do
                       deleteKeysFromMap skippedUserKeys
 
 dereferenceUrl :: MonadManager r m => SQLiteHandle -> Text -> m Text
-dereferenceUrl db url | not (isShort url) = return url
+dereferenceUrl db url | not (isShort url) = pure url
                       | otherwise         = deref url
   where
 
@@ -124,7 +124,7 @@ dereferenceUrl db url | not (isShort url) = return url
       result <- tryWith (undefined :: DatabaseError) $
                 sqlExec db ["key" =. toSQLiteValue key]
                 "SELECT (value) FROM url_cache WHERE key = :key;"
-      return $ case result of
+      pure $ case result of
         Right [[[(_, x)]]] -> fromSQLiteValue x
         _                  -> Nothing
 
@@ -135,14 +135,14 @@ dereferenceUrl db url | not (isShort url) = return url
     deref url = do
       result <- getCachedValue url
       case result of
-        Just url' -> return url'
+        Just url' -> pure url'
         Nothing   -> do
           result' <- findRedirect url
           case result' of
-            Nothing -> return url
+            Nothing -> pure url
             Just url' -> do
               setCachedValue url url'
-              return url'
+              pure url'
 
 findRedirect :: MonadManager r m => Text -> m (Maybe Text)
 findRedirect url = do
@@ -151,7 +151,7 @@ findRedirect url = do
   let request' = request { HTTP.redirectCount = 0
                          , HTTP.checkStatus = \_ _ _ -> Nothing }
   response <- tryAny (HTTP.httpLbs request' mgr)
-  return $
+  pure $
     eitherToMaybe . Text.decodeUtf8' =<<
     List.lookup HTTP.hLocation . HTTP.responseHeaders =<<
     eitherToMaybe response
@@ -173,7 +173,7 @@ updateUser db git user = do
 ensureDirectoryExist :: MonadIO m => FilePath -> m FilePath
 ensureDirectoryExist dir = do
   liftIO (createDirectoryIfMissing True dir)
-  return dir
+  pure dir
 
 initializeVariableTable :: MonadIO m => SQLiteHandle -> m ()
 initializeVariableTable db =
@@ -185,9 +185,9 @@ getVariable db key = liftIO $ do
   result <- tryWith (undefined :: DatabaseError) $
             sqlExec db ["key" =. SQL.Text key]
             "SELECT value FROM meta WHERE key = :key"
-  case result of
-    Right [[[(_, x)]]] -> return (fromSQLiteValue x)
-    _                  -> return Nothing
+  pure $ case result of
+    Right [[[(_, x)]]] -> fromSQLiteValue x
+    _                  -> Nothing
 
 setVariable :: (MonadIO m, SQLiteValue a) =>
                SQLiteHandle -> String -> a -> m ()
@@ -342,21 +342,21 @@ upgradeDatabase db confDir = liftIO $ do
       createTable db "other_events" ["time", "data"]
 
       -- migrate keys
-      keys <- readFileB keysFile `catchIOError` \ _ -> return mempty
+      keys <- readFileB keysFile `catchIOError` \ _ -> pure mempty
       case ByteString.lines keys of
         token : secret : _ -> do
           putStrLn' "migrating keys..."
           setVariable db "token"        token
           setVariable db "token_secret" secret
           putStrLn' "keys migrated."
-        _ -> return ()
+        _ -> pure ()
 
       -- upgrade done
       setVariable db "version" currentVersion
       putStrLn' "database initialized."
 
       -- cleanup
-      removeFile keysFile `catchIOError` \ _ -> return mempty
+      removeFile keysFile `catchIOError` \ _ -> pure mempty
 
       where keysFile = confDir </> "keys"
 
@@ -374,7 +374,7 @@ twitterAuth Nothing = do
   twitterAuth (Just cred)
 twitterAuth (Just cred) = do
   putStrLn' "Login successful.\n"
-  return (newTWInfo cred, cred)
+  pure (newTWInfo cred, cred)
 
 simpleParse :: (P.Stream s Identity t, Show t) =>
                P.Parsec s () a -> s -> Maybe a
@@ -412,7 +412,7 @@ printStatus status = putTextLn' (name <> ": " <> text)
 runHandlers :: Monad m => [Maybe (m ())] -> m ()
 runHandlers (Just x  : _) = x
 runHandlers (Nothing : r) = runHandlers r
-runHandlers []            = return ()
+runHandlers []            = pure ()
 
 sleepSec :: MonadIO m => Double -> m ()
 sleepSec = liftIO . threadDelay . round . (1e6 *)
@@ -439,19 +439,19 @@ processTimeline git db myName streamEvent = do
     SDelete delete -> do
       insertRow db "deletes" (makeDDelete now delete)
     SFriends _ -> do
-      return () -- ignore
+      pure () -- ignore
     SUnknown event ->
       insertRow db "other_events"
         ["time" =. toSQLiteValue now,
          "data" =. toSQLiteValue event]
 
 statusHandler :: MonadTwitter r m => SQLiteHandle -> Text -> Status -> m ()
-statusHandler db myName status = fromMaybe (return ()) $ do
+statusHandler db myName status = fromMaybe (pure ()) $ do
   (name, _, message) <- parseStatusText sText
   guard (name == myName)
-  return $ runHandlers
+  pure $ runHandlers
     [ if message == ":3"
-      then return . void . fork $ do
+      then pure . void . fork $ do
         let coeff = 60 -- seconds
         factor <- randomRIO (0.01, 15 :: Double)
         let delay = coeff * factor
@@ -464,7 +464,7 @@ statusHandler db myName status = fromMaybe (return ()) $ do
 
     , do
       count <- parseArfs message
-      return . void . fork $ do
+      pure . void . fork $ do
         factor <- randomRIO (0.01, 1 :: Double)
         let count' = round (fromIntegral count * factor)
             msg    = mconcat (List.replicate count' "arf") <> " :3"

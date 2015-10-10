@@ -117,7 +117,7 @@ preauthorize :: MonadManager r m => m (Credential, String)
 preauthorize = do
   mgr  <- view manager
   cred <- OAuth.getTemporaryCredential oauth mgr
-  return (cred, List.takeWhile (/= '&') (OAuth.authorizeUrl oauth cred))
+  pure (cred, List.takeWhile (/= '&') (OAuth.authorizeUrl oauth cred))
 
 authorize :: MonadManager r m =>
              Credential -> String -> m (ByteString, ByteString)
@@ -126,12 +126,12 @@ authorize cred pin = do
   cred   <- OAuth.getAccessToken oauth (combinePinCred pin cred) mgr
   token  <- lookupCred cred "oauth_token"
   secret <- lookupCred cred "oauth_token_secret"
-  return (token, secret)
+  pure (token, secret)
   where combinePinCred pin cred =
           OAuth.insert "oauth_verifier" (ByteString.pack pin) cred
         lookupCred (Credential cred) name =
           case List.lookup name cred of
-            Just value -> return value
+            Just value -> pure value
             Nothing    -> ioError . userError $
                           "failed to receive access keys"
 
@@ -149,7 +149,7 @@ withTwitter action = do
 getMyName :: MonadTwitter r m => m Text
 getMyName = withTwitter $ \ tw mgr -> do
   me <- call tw mgr accountVerifyCredentials
-  return (me ^. userScreenName)
+  pure (me ^. userScreenName)
 
 userStream :: MonadTwitter r m => (StreamingAPI -> m ()) -> m ()
 userStream action = withTwitter $ \ tw mgr -> do
