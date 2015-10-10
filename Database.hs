@@ -7,7 +7,6 @@ module Database
 import Prelude ()
 import Common
 import Data.Int (Int64)
-import Data.Time (UTCTime)
 import Database.SQLite (SQLiteHandle)
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Encode as JSON

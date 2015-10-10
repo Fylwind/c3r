@@ -53,6 +53,7 @@ executable c3r
                      , parsec
                      , process
                      , random
+                     , regex-compat
                      , resourcet
                      , sqlite
                      , text

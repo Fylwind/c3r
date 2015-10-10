@@ -5,16 +5,21 @@ module Common
   , module Calico.MonadIOControl
   , module Calico.ByteString.MonadIO
   , module Calico.Text.MonadIO
+  , module Data.Time
+  , module Text.Regex
   ) where
 import Prelude ()
 import Calico.Base
 import Calico.MonadIOControl
 import Calico.ByteString.MonadIO
 import Calico.Text.MonadIO
+import Data.Time (UTCTime)
 import System.Directory
 import System.Random (Random)
+import Text.Regex (Regex, mkRegexWithOpts, matchRegex)
 import qualified Data.List as List
 import qualified Data.Text as Text
+import qualified Data.Time as Time
 import qualified System.Random as Random
 
 eitherToMaybe :: Either b a -> Maybe a
@@ -68,6 +73,9 @@ randomFiber (choices : rest) = do
   rest' <- randomFiber rest
   pure (choices !! index : rest')
 
+getCurrentTime :: MonadIO m => m UTCTime
+getCurrentTime = liftIO Time.getCurrentTime
+
 -- | Perform the given action with a different working directory.
 withDir :: FilePath -> IO a -> IO a
 withDir dir action = do
@@ -82,3 +90,12 @@ _s = id
 
 traceS :: Show a => a -> a
 traceS x = traceShow x x
+
+mkRegexI :: String -> Regex
+mkRegexI s = mkRegexWithOpts s True False
+
+containsWord :: String -> String -> Bool
+containsWord s q =
+  case matchRegex (mkRegexI q) s of
+    Just _  -> True
+    Nothing -> False

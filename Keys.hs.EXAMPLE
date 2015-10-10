@@ -7,3 +7,24 @@ consumerKey = "???"
 -- | Consumer Secret (API Secret)
 consumerSecret :: String
 consumerSecret = "???"
+
+findKeywords :: String -> String -> Maybe String
+findKeywords name msg
+
+  | nameIs "somebody" &&
+    ( 0.5 `prob` containsWord msg "hello"
+    + 0.4 `prob` containsWord msg "hi"
+    + 0.3 `prob` containsWord msg "hey"
+    ) > 0.5 = Just "somebody: greeting"
+
+  | otherwise = Nothing
+  where
+    nameIs :: String -> Bool
+    nameIs n = (toLower <$> name) == (toLower <$> n)
+
+    prob :: Double -> Bool -> Double
+    prob p b | b         = p
+             | otherwise = 0
+
+notifyDest :: String
+notifyDest = "somebody@example.com"

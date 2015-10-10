@@ -156,16 +156,16 @@ userStream action = withTwitter $ \ tw mgr -> do
   streamSource <- stream tw mgr userstream
   streamSource $$+- C.mapM_ action
 
-postReply :: MonadTwitter r m => Text -> Integer -> m ()
+postReply :: MonadTwitter r m => Text -> StatusId -> m ()
 postReply msg id = withTwitter $ \ tw mgr -> do
   void . call tw mgr $ update msg & inReplyToStatusId ?~ id
 
 -- | Reply the given user, inserting extra spaces if necessary to avoid
 --   the "Status duplicate" error
 postReplyR :: MonadTwitter r m =>
-              Text                      -- ^ screen name of recipient
+              UserName                  -- ^ screen name of recipient
            -> Text                      -- ^ message
-           -> Integer                   -- ^ status ID being replied to
+           -> StatusId                  -- ^ status ID being replied to
            -> m ()
 postReplyR name msg id =
   postReply msg' id `catch` \ err ->

@@ -5,14 +5,15 @@ import Prelude ()
 import Common
 import Database
 import Git
+import Keys
 import Twitter
 
 import Control.Lens
 import Data.Aeson (ToJSON, toJSON)
 import Data.Hashable (Hashable)
-import Data.Time (UTCTime, getCurrentTime)
 import System.Directory
 import System.FilePath
+import System.Process (readProcess)
 import Web.Twitter.Types.Lens
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Encode.Pretty as JP
@@ -446,32 +447,43 @@ processTimeline git db myName streamEvent = do
          "data" =. toSQLiteValue event]
 
 statusHandler :: MonadTwitter r m => SQLiteHandle -> Text -> Status -> m ()
-statusHandler db myName status = fromMaybe (pure ()) $ do
-  (name, _, message) <- parseStatusText sText
-  guard (name == myName)
-  pure $ runHandlers
-    [ if message == ":3"
-      then pure . void . fork $ do
-        let coeff = 60 -- seconds
-        factor <- randomRIO (0.01, 15 :: Double)
-        let delay = coeff * factor
-        logMessage db ("replying " <> show sId <>
-                       " in " <> show delay <> " sec")
-        sleepSec delay
-        postReplyR sName ":3" sId
-        logMessage db ("replied to " <> show sId)
-      else mzero
+statusHandler db myName status = do
 
-    , do
-      count <- parseArfs message
-      pure . void . fork $ do
-        factor <- randomRIO (0.01, 1 :: Double)
-        let count' = round (fromIntegral count * factor)
-            msg    = mconcat (List.replicate count' "arf") <> " :3"
-        postReplyR sName msg sId
-        logMessage db "replied"
+  case findKeywords (Text.unpack sName) (Text.unpack sText) of
+    Just subject -> do
+      let notifyMsg = "https://twitter.com/_/status/" <> show sId
+      -- use BSD mail please!
+      void . liftIO $
+        readProcess "mail" ["-s", subject, notifyDest] notifyMsg
+    Nothing -> pure ()
 
-    ]
+  fromMaybe (pure ()) $ do
+    (name, _, message) <- parseStatusText sText
+    guard (name == myName)
+    pure $ runHandlers
+      [ if message == ":3"
+        then pure . void . fork $ do
+          let coeff = 60 -- seconds
+          factor <- randomRIO (0.01, 15 :: Double)
+          let delay = coeff * factor
+          logMessage db ("replying " <> show sId <>
+                         " in " <> show delay <> " sec")
+          sleepSec delay
+          postReplyR sName ":3" sId
+          logMessage db ("replied to " <> show sId)
+        else mzero
+
+      , do
+        count <- parseArfs message
+        pure . void . fork $ do
+          factor <- randomRIO (0.01, 1 :: Double)
+          let count' = round (fromIntegral count * factor)
+              msg    = mconcat (List.replicate count' "arf") <> " :3"
+          postReplyR sName msg sId
+          logMessage db "replied"
+
+      ]
+
   where sName = status ^. statusUser . userScreenName
         sText = status ^. statusText
         sId   = status ^. statusId
