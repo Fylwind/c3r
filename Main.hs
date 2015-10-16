@@ -402,7 +402,7 @@ parseStatusText = simpleParse (P.spaces *> parser)
 
 parseArfs :: Text -> Maybe Int
 parseArfs = simpleParse (P.spaces *> parser)
-  where parser = length <$> many (pTokenS "arf") <* P.optional (pTokenS ":3")
+  where parser = length <$> some (pTokenS "arf") <* P.optional (pTokenS ":3")
 
 printStatus :: MonadIO m => Status -> m ()
 printStatus status = putTextLn' (name <> ": " <> text)
