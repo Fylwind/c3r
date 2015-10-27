@@ -23,12 +23,8 @@ eitherToMaybe :: Either b a -> Maybe a
 eitherToMaybe (Left  _) = Nothing
 eitherToMaybe (Right x) = Just x
 
-mapFst :: (a -> b) -> (a, c) -> (b, c)
-mapFst f (x, y) = (f x, y)
-
-maybeRead :: Read a => String -> Maybe a
-maybeRead (reads -> [(x, "")]) = Just x
-maybeRead _                    = Nothing
+__ :: a
+__ = error "__: dummy value is not meant to be used"
 
 chunkify :: Int -> [a] -> [[a]]
 chunkify _ []            = []

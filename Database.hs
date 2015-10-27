@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveDataTypeable, FlexibleInstances, OverloadedStrings,
-             TypeSynonymInstances #-}
+{-# LANGUAGE DeriveDataTypeable, DefaultSignatures, FlexibleInstances,
+             OverloadedStrings, TypeSynonymInstances #-}
 module Database where
 import Prelude ()
 import Common
@@ -27,6 +27,13 @@ data Database =
 class SQLiteValue a where
   fromSQLiteValue :: SQL.Value -> Maybe a
   toSQLiteValue   :: a -> SQL.Value
+
+  default fromSQLiteValue :: Read a => SQL.Value -> Maybe a
+  fromSQLiteValue (SQL.Text s) = maybeRead s
+  fromSQLiteValue _            = Nothing
+
+  default toSQLiteValue :: Show a => a -> SQL.Value
+  toSQLiteValue = SQL.Text . show
 
 instance SQLiteValue SQL.Value where
   fromSQLiteValue = Just
@@ -79,12 +86,7 @@ instance SQLiteValue Text where
   fromSQLiteValue _            = Nothing
   toSQLiteValue = SQL.Text . Text.unpack
 
-instance SQLiteValue UTCTime where
-  fromSQLiteValue (SQL.Text s) = case readsPrec 0 s of
-    [(i, "")] -> Just i
-    _         -> Nothing
-  fromSQLiteValue _            = Nothing
-  toSQLiteValue = SQL.Text . show
+instance SQLiteValue UTCTime
 
 instance SQLiteValue JSON.Value where
   fromSQLiteValue (SQL.Text s) = JSON.decode . BytesL.fromStrict $
@@ -147,14 +149,14 @@ sqlExec :: (MonadIO m, SQLiteRecord r, SQL.SQLiteResult a) =>
 sqlExec db params stmt = withLock db $ \ conn ->
   throwIfLeft DatabaseError =<<
   SQL.execParamStatement conn stmt
-    (mapFst (":" <>) <$> toSQLiteRecord params)
+    (first (":" <>) <$> toSQLiteRecord params)
 
 sqlExec_ :: (MonadIO m, SQLiteRecord r) =>
             Database -> r -> String -> m ()
 sqlExec_ db params stmt = withLock db $ \ conn ->
   throwIfJust DatabaseError =<<
   SQL.execParamStatement_ conn stmt
-    (mapFst (":" <>) <$> toSQLiteRecord params)
+    (first (":" <>) <$> toSQLiteRecord params)
 
 insertRow :: (MonadIO m, SQLiteRecord r) =>
              Database -> String -> r -> m Integer

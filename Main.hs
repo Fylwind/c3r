@@ -55,6 +55,7 @@ main = do
       -- start doing stuff
       myName <- getMyName
       listLogger db git myName
+      taskRunner db
       periodicGitGC git
       autorestart 1 (userStream (processTimeline git db myName))
 
@@ -71,7 +72,7 @@ autorestart delay action = do
       autorestart delay action
 
 periodicGitGC :: (MonadIO m, MonadBaseControl IO m) => Git -> m ()
-periodicGitGC git = void . fork . autorestart 60 . forever $ do
+periodicGitGC git = fork_ . autorestart 60 . forever $ do
   gitGC git
   sleepSec (6 * 3600)
 
@@ -80,7 +81,7 @@ listLogFrequency = 3600
 
 listLogger :: MonadTwitter r m =>
               Database -> Git -> Text -> m ()
-listLogger db git myName = void . fork . autorestart 60 . forever $ do
+listLogger db git myName = fork_ . autorestart 60 . forever $ do
   friendIds'   <- getFriendIds   myName
   followerIds' <- getFollowerIds myName
   let friendIds   = Set.fromList friendIds'
@@ -115,7 +116,7 @@ dereferenceUrl db url | not (isShort url) = pure url
                   Text.isPrefixOf "https://t.co/" url
 
     getCachedValue key = do
-      result <- tryWith (undefined :: DatabaseError) $
+      result <- tryWith (__ :: DatabaseError) $
                 sqlExec db ["key" =. toSQLiteValue key]
                 "SELECT (value) FROM url_cache WHERE key = :key;"
       pure $ case result of
@@ -176,7 +177,7 @@ initializeVariableTable db =
 getVariable :: (MonadIO m, SQLiteValue a) =>
                Database -> String -> m (Maybe a)
 getVariable db key = liftIO $ do
-  result <- tryWith (undefined :: DatabaseError) $
+  result <- tryWith (__ :: DatabaseError) $
             sqlExec db ["key" =. SQL.Text key]
             "SELECT value FROM meta WHERE key = :key"
   pure $ case result of
@@ -426,12 +427,12 @@ processTimeline git db myName streamEvent = do
   now <- getCurrentTime
   case streamEvent of
     SRetweetedStatus rt -> do
-      void . fork $ do
+      fork_ $ do
         updateUser db git (rt ^. rsRetweetedStatus . statusUser)
         updateUser db git (rt ^. rsUser)
       void $ insertRow db "statuses" (makeDRtStatus now rt)
     SStatus status -> do
-      void . fork $ do
+      fork_ $ do
         updateUser db git (status ^. statusUser)
       void $ insertRow db "statuses" (makeDStatus now status)
       statusHandler db myName status
@@ -448,14 +449,64 @@ processTimeline git db myName streamEvent = do
         ["time" =. toSQLiteValue now,
          "data" =. toSQLiteValue event]
 
-scheduleTask :: SQLiteValue a => Database -> a -> IO ()
-scheduleTask db = _
+data Action
+  = Act_ReplyStatus {-screen_name-}Text {-message-}Text {-status_id-}Integer
+  deriving (Eq, Ord, Read, Show)
 
-rescheduleTasks :: Database -> IO ()
-rescheduleTasks db = _
+instance SQLiteValue Action
 
-taskRunner :: SQL.Value -> IO ()
-taskRunner task = _
+runAction :: MonadTwitter r m => Action -> Database -> m ()
+runAction (Act_ReplyStatus sName sMsg sId) db = do
+  postReplyR sName sMsg sId
+  logMessage db ("replied to " <> show sId)
+
+scheduleTask :: Database -> UTCTime -> Action -> IO ()
+scheduleTask db time action =
+  void $ insertRow db "tasks"
+    [ "time"   =. toSQLiteValue time
+    , "action" =. toSQLiteValue action]
+
+data LockMap k a = LockMap (MVar (Map k a))
+
+lockMap_new :: IO (LockMap k a)
+lockMap_new = LockMap <$> newMVar Map.empty
+
+lockMap_insert :: (Eq k, Hashable k) => k -> a -> LockMap k a -> IO (Maybe a)
+lockMap_insert k v (LockMap lm) =
+  modifyMVar lm $ \ m -> pure $
+  let m' = Map.insert k v m in
+  case Map.lookup k m of
+    Just v' -> (m', Just v')
+    Nothing -> (m', Nothing)
+
+lockMap_delete :: (Eq k, Hashable k) => k -> LockMap k a -> IO ()
+lockMap_delete k (LockMap lm) =
+  modifyMVar_ lm (pure . Map.delete k)
+
+taskRunner :: MonadTwitter r m => Database -> m ()
+taskRunner db = fork_ $ do
+  lm <- liftIO lockMap_new
+  forever $ do
+    runTasks lm
+    sleepSec =<< randomRIO (0.1, 3 :: Double)
+  where
+    runTasks lm = do
+      time <- getCurrentTime
+      result <- sqlExec db ["time" =. toSQLiteValue time]
+                "SELECT id, action FROM tasks WHERE time <= :time"
+      (traverse_ . traverse_) (runTask lm) result
+
+    runTask lm [ (_, fromSQLiteValue -> Just taskId)
+               , (_, fromSQLiteValue -> Just action) ] = do
+      prevValue <- liftIO (lockMap_insert taskId () lm)
+      case prevValue of
+        Just () -> pure ()
+        Nothing -> fork_ $ do
+          runAction action db
+          sqlExec_ db ["id" =. toSQLiteValue (taskId :: Integer)]
+                   "DELETE FROM tasks WHERE id = :id"
+          liftIO (lockMap_delete taskId lm)
+    runTask _ _ = pure ()
 
 statusHandler :: MonadTwitter r m => Database -> Text -> Status -> m ()
 statusHandler db myName status = fromMaybe (pure ()) $ do
@@ -463,18 +514,16 @@ statusHandler db myName status = fromMaybe (pure ()) $ do
   guard (name == myName)
   pure $ runHandlers
     [ if message == ":3"
-      then pure . void . fork $ do
+      then Just . fork_ $ do
         delay <- randomRIO (0.01 * 60, 15 * 60 :: Double)
         scheduledTime <- addUTCTime (realToFrac delay) <$> getCurrentTime
         logMessage db ("replying " <> show sId <> " at " <> show scheduledTime)
-        sleepSec delay
-        postReplyR sName ":3" sId
-        logMessage db ("replied to " <> show sId)
-      else mzero
+        liftIO (scheduleTask db scheduledTime (Act_ReplyStatus sName ":3" sId))
+      else Nothing
 
     , do
       count <- parseArfs message
-      pure . void . fork $ do
+      Just . fork_ $ do
         factor <- randomRIO (0.01, 1 :: Double)
         let count' = round (fromIntegral count * factor)
             msg    = mconcat (List.replicate count' "arf") <> " :3"
