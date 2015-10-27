@@ -320,51 +320,45 @@ makeDDelete time delete =
 upgradeDatabase :: MonadIO m => Database -> FilePath -> m ()
 upgradeDatabase db confDir = liftIO $ do
   version <- fromMaybe 0 <$> getVariable db "version"
-  when (version /= currentVersion) $ do
-    upgradeFrom (version :: Int)
+  let versionedUpgrades = zip [(0 :: Int) ..] upgrades
+  for_ (List.drop version versionedUpgrades) $ \ (v, upgrade) -> do
+    upgrade
+    setVariable db "version" (v + 1)
+    if v == 0
+      then putStrLn' "database initialized."
+      else putStrLn' ("database upgraded to version " <> show (v + 1) <> ".")
+
   where
 
     currentVersion :: Int
-    currentVersion = 2
+    currentVersion = length upgrades
 
-    upgradeFrom 0 = do
-      let version = 1 :: Int
-      initializeVariableTable db
+    keysFile = confDir </> "keys"
 
-      -- create various tables
-      initializeUrlCacheTable db
-      createTable db "log" ["time", "message"]
-      createTable db "statuses" fieldNames_DStatus
-      createTable db "deletes"  fieldNames_DDelete
-      createTable db "other_events" ["time", "data"]
+    upgrades =
+      [ do -- version 0
+        initializeVariableTable db
+        initializeUrlCacheTable db
+        createTable db "log" ["time", "message"]
+        createTable db "statuses" fieldNames_DStatus
+        createTable db "deletes"  fieldNames_DDelete
+        createTable db "other_events" ["time", "data"]
 
-      -- migrate keys
-      keys <- readFileB keysFile `catchIOError` \ _ -> pure mempty
-      case ByteString.lines keys of
-        token : secret : _ -> do
-          putStrLn' "migrating keys..."
-          setVariable db "token"        token
-          setVariable db "token_secret" secret
-          putStrLn' "keys migrated."
-        _ -> pure ()
+        -- migrate keys
+        keys <- readFileB keysFile `catchIOError` \ _ -> pure mempty
+        case ByteString.lines keys of
+          token : secret : _ -> do
+            putStrLn' "migrating keys..."
+            setVariable db "token"        token
+            setVariable db "token_secret" secret
+            putStrLn' "keys migrated."
+          _ -> pure ()
+        removeFile keysFile `catchIOError` \ _ -> pure mempty
 
-      -- upgrade done
-      setVariable db "version" version
-      putStrLn' "database initialized."
+        -- version 1
+      , createTable db "tasks" ["id INTEGER PRIMARY KEY", "time", "action"]
 
-      -- cleanup
-      removeFile keysFile `catchIOError` \ _ -> pure mempty
-
-      where keysFile = confDir </> "keys"
-
-    upgradeFrom 1 = do
-      let version = 2 :: Int
-      createTable db "scheduled" ["time", "type", "data"]
-      setVariable db "version" version
-      putStrLn' ("database upgraded to version " <> show version <> ".")
-
-
-    upgradeFrom v = throwIO (Abort ("unknown database version: " <> show v))
+      ]
 
 twitterAuth :: MonadManager r m =>
                Maybe (ByteString, ByteString)

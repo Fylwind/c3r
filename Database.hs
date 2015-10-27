@@ -160,7 +160,7 @@ sqlExec_ db params stmt = withLock db $ \ conn ->
 
 insertRow :: (MonadIO m, SQLiteRecord r) =>
              Database -> String -> r -> m Integer
-insertRow db tableName record = withLock db $ \ conn -> do
+insertRow db tableName record = withLock db $ \ _ -> do
   sqlExec_ db' record' $
     "INSERT INTO " <> tableName <> " (" <> List.intercalate ", " fields <>
     ") VALUES (" <> List.intercalate ", " ((":" <>) <$> fields) <> ");"
