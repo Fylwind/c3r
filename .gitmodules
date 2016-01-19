@@ -1,3 +1,6 @@
 [submodule "calico"]
 	path = calico
 	url = https://github.com/Rufflewind/calico-hs
+[submodule "sqlite"]
+	path = sqlite
+	url = https://github.com/Rufflewind/sqlite
