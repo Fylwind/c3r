@@ -4,7 +4,6 @@ module Main (main) where
 import Prelude ()
 import Common
 import Database
-import Git
 import Twitter
 
 import Control.Lens
@@ -37,7 +36,6 @@ main = do
 
   hSetEncoding stdout utf8
   confDir <- ensureDirectoryExist =<< getAppUserDataDirectory "config/c3r"
-  git <- gitInit (confDir </> "hist")
 
   -- initialize database
   withConnection (confDir </> "db") $ \ db -> do
@@ -54,10 +52,9 @@ main = do
 
       -- start doing stuff
       myName <- getMyName
-      listLogger db git myName
+      listLogger db myName
       taskRunner db
-      periodicGitGC git
-      autorestart 1 (userStream (processTimeline git db myName))
+      autorestart 1 (userStream (processTimeline db myName))
 
 -- | Automatically restart if the action fails (after the given delay).
 autorestart :: (MonadIO m, MonadBaseControl IO m) => Double -> m b -> m b
@@ -67,43 +64,38 @@ autorestart delay action = do
   case result of
     Right x -> pure x
     Left  e -> do
-      hPutStr' stderr (show e)
+      hPutStrLn' stderr (show e)
       sleepSec delay
       autorestart delay action
-
-periodicGitGC :: (MonadIO m, MonadBaseControl IO m) => Git -> m ()
-periodicGitGC git = fork_ . autorestart 60 . forever $ do
-  gitGC git
-  sleepSec (6 * 3600)
 
 listLogFrequency :: Num a => a
 listLogFrequency = 3600
 
 listLogger :: MonadTwitter r m =>
-              Database -> Git -> Text -> m ()
-listLogger db git myName = fork_ . autorestart 60 . forever $ do
-  friendIds'   <- getFriendIds   myName
-  followerIds' <- getFollowerIds myName
-  let friendIds   = Set.fromList friendIds'
-  let followerIds = Set.fromList followerIds'
-  let userIds     = friendIds <> followerIds
-  gitAddFile git "friends"
-    (Text.encodeUtf8 (Text.unlines (showT <$> List.sort friendIds')))
-  gitAddFile git "followers"
-    (Text.encodeUtf8 (Text.unlines (showT <$> List.sort followerIds')))
-  for_ (chunkify getUsersById_max (Set.toList userIds)) $ \ userIds' -> do
-    users <- getUsersById userIds'
-    for_ users $ \ user -> do
-      updateUserWithoutCommit db git user
-  gitCommit git "Scheduled update"
-  gitGC git
+              Database -> Text -> m ()
+listLogger db myName = fork_ . autorestart 60 . forever $ do
+  -- friendIds'   <- getFriendIds   myName
+  -- followerIds' <- getFollowerIds myName
+  -- let friendIds   = Set.fromList friendIds'
+  -- let followerIds = Set.fromList followerIds'
+  -- let userIds     = friendIds <> followerIds
+  -- gitAddFile git "friends"
+  --   (Text.encodeUtf8 (Text.unlines (showT <$> List.sort friendIds')))
+  -- gitAddFile git "followers"
+  --   (Text.encodeUtf8 (Text.unlines (showT <$> List.sort followerIds')))
+  -- for_ (chunkify getUsersById_max (Set.toList userIds)) $ \ userIds' -> do
+  --   users <- getUsersById userIds'
+  --   for_ users $ \ user -> do
+  --     updateUserWithoutCommit db git user
+  _
   sleepSec listLogFrequency
 
 updateUserWithoutCommit :: MonadManager r m =>
-                           Database -> Git -> User -> m ()
-updateUserWithoutCommit db git user = do
+                           Database -> User -> m ()
+updateUserWithoutCommit db user = do
   user' <- userURL (traverse (dereferenceUrl db)) user
-  gitAddFile git ("users/" <> show (user ^. userId)) (prettyJson (strip user'))
+  -- gitAddFile git ("users/" <> show (user ^. userId)) (prettyJson (strip user'))
+  _
   where strip user' = (`mapJSONObject` toJSON user') $
                       deleteKeysFromMap skippedUserKeys
 
@@ -160,10 +152,10 @@ prettyJson =
   ByteStringL.toStrict .
   JP.encodePretty' JP.Config { JP.confIndent = 4, JP.confCompare = compare }
 
-updateUser :: MonadManager r m => Database -> Git -> User -> m ()
-updateUser db git user = do
-  updateUserWithoutCommit db git user
-  gitCommit git "Streamed update"
+updateUser :: MonadManager r m => Database -> User -> m ()
+updateUser db user = do
+  updateUserWithoutCommit db user
+  -- gitCommit git "Streamed update"
 
 ensureDirectoryExist :: MonadIO m => FilePath -> m FilePath
 ensureDirectoryExist dir = do
@@ -355,10 +347,34 @@ upgradeDatabase db confDir = liftIO $ do
           _ -> pure ()
         removeFile keysFile `catchIOError` \ _ -> pure mempty
 
-        -- version 1
-      , createTable db "tasks" ["id INTEGER PRIMARY KEY", "time", "action"]
+      , do -- version 1
+        createTable db "tasks" ["id INTEGER PRIMARY KEY", "time", "action"]
+        createTable db "users" ["user_id", "field", "value"]
+        createTable db "users_hist" ["time", "user_id", "field", "value"]
+        createIndex db "_index__users__user_id" "users" ["user_id"]
+        -- virtual fields: follower@Fylwind and friend@Fylwind
 
       ]
+
+newtype RecValue = RecValue (Maybe JSON.Object)
+
+instance SQLiteValue RecValue where
+  fromSQLiteValue v = RecValue <$> case v of
+    SQL.Null     -> Just Nothing
+    SQL.Int    x -> Just (Just (JSON.Number (fromIntegral x)))
+    SQL.Text   x -> Just (Just (parse x))
+    SQL.Blob   _ -> Nothing
+    SQL.Double x -> Just (JSON.Number (realToFrac x))
+    where parse x = case Text.uncons x of
+            Nothing ->
+            Just (c, r) -> case c of
+              'Y' -> JSON.Bool True
+              'N' -> JSON.Bool False
+              '.' -> JSON.Null
+              '@' -> JSON.
+              '#' -> JSON.Number ()
+              _   -> JSON.String r
+  toSQLiteValue = id
 
 twitterAuth :: MonadManager r m =>
                Maybe (ByteString, ByteString)
@@ -416,18 +432,18 @@ sleepSec :: MonadIO m => Double -> m ()
 sleepSec = liftIO . threadDelay . round . (1e6 *)
 
 processTimeline :: MonadTwitter r m =>
-                   Git -> Database -> Text -> StreamingAPI -> m ()
-processTimeline git db myName streamEvent = do
+                   Database -> Text -> StreamingAPI -> m ()
+processTimeline db myName streamEvent = do
   now <- getCurrentTime
   case streamEvent of
     SRetweetedStatus rt -> do
       fork_ $ do
-        updateUser db git (rt ^. rsRetweetedStatus . statusUser)
-        updateUser db git (rt ^. rsUser)
+        updateUser db (rt ^. rsRetweetedStatus . statusUser)
+        updateUser db (rt ^. rsUser)
       void $ insertRow db "statuses" (makeDRtStatus now rt)
     SStatus status -> do
       fork_ $ do
-        updateUser db git (status ^. statusUser)
+        updateUser db (status ^. statusUser)
       void $ insertRow db "statuses" (makeDStatus now status)
       statusHandler db myName status
     SEvent _ -> do

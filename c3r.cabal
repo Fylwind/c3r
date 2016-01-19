@@ -15,7 +15,6 @@ executable c3r
   main-is:             Main.hs
   other-modules:       Common
                        Database
-                       Git
                        Keys
                        Twitter
                        Calico.Base
@@ -51,7 +50,6 @@ executable c3r
                      , monad-control
                      , mtl
                      , parsec
-                     , process
                      , random
                      , resourcet
                      , sqlite

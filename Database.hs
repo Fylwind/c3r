@@ -39,15 +39,6 @@ instance SQLiteValue SQL.Value where
   fromSQLiteValue = Just
   toSQLiteValue = id
 
--- caveat: the wrapped type must not use NULL to represent its data!
-instance SQLiteValue a => SQLiteValue (Maybe a) where
-  fromSQLiteValue SQL.Null = Nothing
-  fromSQLiteValue x        = Just (fromSQLiteValue x)
-  toSQLiteValue Nothing  = SQL.Null
-  toSQLiteValue (Just x) = case toSQLiteValue x of
-    SQL.Null -> error "toSQLiteValue[Maybe]: did not expect Null"
-    x'       -> x'
-
 instance SQLiteValue ByteString where
   fromSQLiteValue (SQL.Blob s) = Just s
   fromSQLiteValue _            = Nothing
@@ -94,6 +85,18 @@ instance SQLiteValue JSON.Value where
   fromSQLiteValue _            = Nothing
   toSQLiteValue = SQL.Text . TextL.unpack .
                   TextL.toLazyText . JSON.encodeToTextBuilder
+
+-- | Caveat: the wrapped type must not use NULL to represent its data!
+maybeFromSQLiteValue :: SQLiteValue a => SQL.Value -> Maybe (Maybe a)
+maybeFromSQLiteValue SQL.Null = Nothing
+maybeFromSQLiteValue x        = Just (fromSQLiteValue x)
+
+-- | Caveat: the wrapped type must not use NULL to represent its data!
+maybeToSQLiteValue :: SQLiteValue a => Maybe a -> SQL.Value
+maybeToSQLiteValue Nothing  = SQL.Null
+maybeToSQLiteValue (Just x) = case toSQLiteValue x of
+  SQL.Null -> error "maybeToSQLiteValue: did not expect Null"
+  x'       -> x'
 
 class SQLiteRecord r where
   fromSQLiteRecord :: SQL.Row SQL.Value -> Maybe r
@@ -172,4 +175,9 @@ insertRow db tableName record = withLock db $ \ _ -> do
 createTable :: MonadIO m => Database -> String -> [String] -> m ()
 createTable db name fields =
   sqlExec_' db ("CREATE TABLE IF NOT EXISTS " <> name <>
+                " (" <> intercalate ", " fields <> ");")
+
+createIndex :: MonadIO m => Database -> String -> String -> [String] -> m ()
+createIndex db name table fields =
+  sqlExec_' db ("CREATE INDEX IF NOT EXISTS " <> name <> " ON " <> table <>
                 " (" <> intercalate ", " fields <> ");")
