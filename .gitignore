@@ -1,5 +1,6 @@
 cabal.config
 Keys.hs
+*.db
 
 # generic
 .\#*

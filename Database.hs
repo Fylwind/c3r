@@ -7,7 +7,6 @@ module Database
 import Prelude ()
 import Common
 import Data.Int (Int64)
-import Data.Time (UTCTime)
 import Database.SQLite (SQLiteHandle)
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Encode as JSON
@@ -84,6 +83,8 @@ instance SQLiteValue UTCTime where
   fromSQLiteValue _            = Nothing
   toSQLiteValue = SQL.Text . show
 
+-- Note that JSON.Null is not stored as SQL.Null, but as SQL.Text "null"
+-- This is crucial: we use SQL.Null to indicate a deleted entry in user_updates
 instance SQLiteValue JSON.Value where
   fromSQLiteValue (SQL.Text s) = JSON.decode . BytesL.fromStrict $
                                  Text.encodeUtf8 (Text.pack s)
@@ -114,42 +115,53 @@ boundedFromIntegral i
   | otherwise                                         = Nothing
   where i' = fromIntegral i
 
+(=..) :: SQLiteValue a => String -> a -> (String, SQL.Value)
+x =.. y = x =. toSQLiteValue y
+
 withConnection :: String -> (SQLiteHandle -> IO c) -> IO c
 withConnection name = bracket (SQL.openConnection name) SQL.closeConnection
 
+withTransaction :: (MonadIO m, MonadMask m) =>
+                   SQLiteHandle -> m a -> m a
+withTransaction db =
+  bracket_
+  (sqlExec_' db "BEGIN TRANSACTION;")
+  (sqlExec_' db "COMMIT TRANSACTION;")
+
 sqlExec' :: (MonadIO m, SQL.SQLiteResult a) =>
             SQLiteHandle -> String -> m [[SQL.Row a]]
-sqlExec' conn stmt =
-  liftIO $ throwIfLeft DatabaseError =<< SQL.execStatement conn stmt
+sqlExec' db stmt =
+  liftIO $ throwIfLeft DatabaseError =<< SQL.execStatement db stmt
 
 sqlExec_' :: MonadIO m => SQLiteHandle -> String -> m ()
-sqlExec_' conn stmt =
-  liftIO $ throwIfJust DatabaseError =<< SQL.execStatement_ conn stmt
+sqlExec_' db stmt =
+  liftIO $ throwIfJust DatabaseError =<< SQL.execStatement_ db stmt
 
 sqlExec :: (MonadIO m, SQLiteRecord r, SQL.SQLiteResult a) =>
            SQLiteHandle -> r -> String -> m [[SQL.Row a]]
-sqlExec conn params stmt =
+sqlExec db params stmt =
   liftIO $ throwIfLeft DatabaseError =<<
-           SQL.execParamStatement conn stmt
+           SQL.execParamStatement db stmt
              (mapFst (":" <>) <$> toSQLiteRecord params)
 
 sqlExec_ :: (MonadIO m, SQLiteRecord r) =>
             SQLiteHandle -> r -> String -> m ()
-sqlExec_ conn params stmt =
+sqlExec_ db params stmt =
   liftIO $ throwIfJust DatabaseError =<<
-           SQL.execParamStatement_ conn stmt
+           SQL.execParamStatement_ db stmt
              (mapFst (":" <>) <$> toSQLiteRecord params)
 
 insertRow :: (MonadIO m, SQLiteRecord r) =>
              SQLiteHandle -> String -> r -> m ()
-insertRow conn tableName record =
-  sqlExec_ conn record' $
+insertRow db tableName record =
+  sqlExec_ db record' $
     "INSERT INTO " <> tableName <> " (" <> List.intercalate ", " fields <>
     ") VALUES (" <> List.intercalate ", " ((":" <>) <$> fields) <> ");"
   where fields  = fst <$> record'
         record' = toSQLiteRecord record
 
 createTable :: MonadIO m => SQLiteHandle -> String -> [String] -> m ()
-createTable conn name fields =
-  sqlExec_' conn ("CREATE TABLE IF NOT EXISTS " <> name <>
-                  " (" <> intercalate ", " fields <> ");")
+createTable db name fields =
+  sqlExec_' db $
+    "CREATE TABLE IF NOT EXISTS " <> name <>
+    " (" <> intercalate ", " fields <> ");"

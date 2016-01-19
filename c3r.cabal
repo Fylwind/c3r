@@ -15,7 +15,7 @@ executable c3r
   main-is:             Main.hs
   other-modules:       Common
                        Database
-                       Git
+                       Diff
                        Keys
                        Twitter
                        Calico.Base
@@ -40,9 +40,10 @@ executable c3r
                      , authenticate-oauth
                      , bytestring
                      , conduit
+                     , containers
                      , data-default
                      , directory
-                     , filepath
+                     , exceptions
                      , hashable
                      , http-types
                      , http-conduit

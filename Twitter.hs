@@ -24,7 +24,7 @@ import qualified Keys
 import Control.Lens
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader)
-import Control.Monad.Trans.Resource (MonadResource, ResourceT)
+import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
 import Data.Aeson (FromJSON)
 import Data.Conduit (($$), ($$+-))
 import Data.Conduit.List (consume)
@@ -33,10 +33,11 @@ import Network.HTTP.Conduit
 import Web.Authenticate.OAuth (OAuth(..), Credential(..))
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens hiding (name)
-import qualified Data.Text as Text
+import qualified Data.Aeson as JSON
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Conduit.List as C
 import qualified Data.List as List
+import qualified Data.Text as Text
 import qualified Web.Authenticate.OAuth as OAuth
 
 type ListAPI a c s = (FromJSON s, CursorKey c,
@@ -55,11 +56,11 @@ getFriendIds = getList . friendsIds . ScreenNameParam . Text.unpack
 getFollowerIds :: MonadTwitter r m => Text -> m [Integer]
 getFollowerIds = getList . followersIds . ScreenNameParam . Text.unpack
 
-getUsersById :: MonadTwitter r m => [Integer] -> m [User]
+getUsersById :: MonadTwitter r m => [Integer] -> m [JSON.Value]
 getUsersById ids = do
   tw  <- view twitter
   mgr <- view manager
-  call tw mgr (usersLookup (UserIdListParam ids))
+  call' tw mgr (usersLookup (UserIdListParam ids))
 
 getUsersById_max :: Int
 getUsersById_max = 100
@@ -73,7 +74,7 @@ type TwitterM a = ReaderT (TWInfo, Manager) (ResourceT IO) a
 -- | 'Monad's that have a 'Manager' for HTTP connections.
 --
 --   Note: this is implicitly a subclass of 'MonadIO'.
-type MonadManager r m = (HasManager r, MonadReader r m,
+type MonadManager r m = (HasManager r, MonadReader r m, MonadMask m,
                          MonadBaseControl IO m, MonadResource m)
 
 -- | 'Monad's that have a 'TWInfo' for HTTP connections.
@@ -101,12 +102,15 @@ instance HasTwitter (TWInfo, a) where
 
 -- | Run the 'ManagerM' monad.
 runManagerM :: MonadIO m => ManagerM a -> m a
-runManagerM action = liftIO (withManager (runReaderT action))
+runManagerM action = liftIO $ do
+  mgr <- newManager tlsManagerSettings
+  runResourceT (runReaderT action mgr)
 
 -- | Run the 'TwitterM' monad.
 runTwitterM :: MonadIO m => TWInfo -> TwitterM a -> m a
-runTwitterM tw action = liftIO . withManager $ \ mgr ->
-  runReaderT action (tw, mgr)
+runTwitterM tw action = liftIO $ do
+  mgr <- newManager tlsManagerSettings
+  runResourceT (runReaderT action (tw, mgr))
 
 oauth :: OAuth
 oauth = twitterOAuth
@@ -140,24 +144,23 @@ newTWInfo (token, secret) = setCredential oauth (Credential cred) def
   where cred = [("oauth_token", token), ("oauth_token_secret", secret)]
 
 -- | Convenience function for extracting the environment.
-withTwitter :: MonadTwitter r m => (TWInfo -> Manager -> m a) -> m a
-withTwitter action = do
+withTWInfo :: MonadTwitter r m => (TWInfo -> Manager -> m a) -> m a
+withTWInfo action = do
   tw  <- view twitter
   mgr <- view manager
   action tw mgr
 
-getMyName :: MonadTwitter r m => m Text
-getMyName = withTwitter $ \ tw mgr -> do
-  me <- call tw mgr accountVerifyCredentials
-  pure (me ^. userScreenName)
+getMyself :: MonadTwitter r m => m User
+getMyself = withTWInfo $ \ tw mgr -> do
+  call tw mgr accountVerifyCredentials
 
-userStream :: MonadTwitter r m => (StreamingAPI -> m ()) -> m ()
-userStream action = withTwitter $ \ tw mgr -> do
-  streamSource <- stream tw mgr userstream
+userStream :: MonadTwitter r m => (JSON.Value -> m ()) -> m ()
+userStream action = withTWInfo $ \ tw mgr -> do
+  streamSource <- stream' tw mgr userstream
   streamSource $$+- C.mapM_ action
 
 postReply :: MonadTwitter r m => Text -> Integer -> m ()
-postReply msg id = withTwitter $ \ tw mgr -> do
+postReply msg id = withTWInfo $ \ tw mgr -> do
   void . call tw mgr $ update msg & inReplyToStatusId ?~ id
 
 -- | Reply the given user, inserting extra spaces if necessary to avoid
@@ -171,7 +174,7 @@ postReplyR name msg id =
   postReply msg' id `catch` \ err ->
   if errorCodeIs errStatusDuplicate err && Text.length msg' < maxMsgLen
   then postReplyR name (" " <> msg) id
-  else throwIO err
+  else throwM err
   where msg' = "@" <> name <> " " <> msg
 
 errStatusDuplicate :: Int
