@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+import argparse, json, sqlite3, sys
+
+def json_canonical(data, ensure_ascii=False, sort_keys=True, **kwargs):
+    return json.dumps(
+        data,
+        ensure_ascii=ensure_ascii,
+        sort_keys=sort_keys,
+        **kwargs
+    )
+
+def json_pretty(data):
+    return json_canonical(data, indent=4, separators=(",", ": "))
+
+class User(object):
+    def __init__(self, data):
+        self.__dict__ = data
+    def __str__(self):
+        return json_pretty(vars(self))
+
+class Diff(object):
+    def __init__(self, deletes, inserts, metadata=None):
+        self.deletes = deletes
+        self.inserts = inserts
+        self.metadata = metadata
+    def __str__(self):
+        return "\n".join([
+            "# " + str(self.metadata),
+        ] + ["- {0}".format(k) for k in self.deletes]
+          + ["+ {0}: {1}".format(k, v) for k, v in self.inserts])
+        return json_pretty(vars(self))
+
+class DB(object):
+    def __init__(self, filename="c3r.db"):
+        self.db = sqlite3.connect(filename)
+
+    def user(self, user):
+        if isinstance(user, str):
+            return self.user(self.get_user_id_by_screen_name(user))
+        if isinstance(user, int):
+            return self.get_user_by_id(user)
+        return user
+
+    def get_user_id_by_screen_name(self, screen_name):
+        results = tuple(self.db.execute(
+            "SELECT id FROM users WHERE attr = 'screen_name' AND val LIKE ?",
+            [json.dumps(screen_name)]))
+        if not results:
+            raise KeyError("cannot find @{0}".format(screen_name))
+        return results[0][0]
+
+    def get_user_by_id(self, user_id):
+        user = User(dict((k, json.loads(v)) for k, v in self.db.execute(
+            "SELECT attr, val FROM users WHERE id == ?",
+            [user_id])))
+        user.id = user_id
+        return user
+
+    def get_user_history(self, user):
+        user_id = self.user(user).id
+        return merge_adjacent_diffs([
+            Diff([k], [], t)
+            if v is None else
+            Diff([], [(k, json.loads(v))], t)
+            for t, k, v in self.db.execute(
+                "SELECT time, attr, val FROM user_updates WHERE id == ?",
+                [user_id])])
+
+def merge_diffs(diff1, diff2):
+    diff2_deletes = set(diff2.deletes)
+    diff1_inserts = [insert for insert in diff1.inserts
+                     if insert not in diff2_deletes]
+    return Diff(diff1.deletes + diff2.deletes,
+                diff1_inserts + diff2.inserts,
+                diff1.metadata)
+
+def merge_adjacent_diffs(diffs):
+    new_diffs = []
+    for diff in diffs:
+        if new_diffs and new_diffs[-1].metadata == diff.metadata:
+            new_diffs[-1] = merge_diffs(new_diffs[-1], diff)
+        else:
+            new_diffs.append(diff)
+    return new_diffs
+
+p = argparse.ArgumentParser()
+p.add_argument("user")
+args = p.parse_args()
+
+db = DB()
+user = db.user(args.user)
+for diff in db.get_user_history(user):
+    print(diff)
+    print("")
