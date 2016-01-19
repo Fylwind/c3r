@@ -1,49 +1,46 @@
 #!/bin/sh
 #
-# be sure to start the VM first with `VBoxHeadless -s <name>`
+# Initial preparation
+# -------------------
+#
+#   apt-get install -y libsqlite3-dev
+#
+# Build procedure
+# ---------------
+#
+# 1. Start the virtual machine: VBoxHeadless -s <vm>
+# 2. Log into a shared SSH session with the server: ssh <srv>
+# 3. Run: ./vm-build-hs.sh [<branch>]
+#
+set -eu
 
 vm=vm-deb
 srv=tails
 app=c3r
+bindir=.local/bin
+remote=https://github.com/Fylwind/$app
+branch=${1-master}
 
 # ----------------------------------------------------------------------------
 
-set -e
-
-# shell-escape the given variable
-#
-# inputs:
-#   - 1: name of the variable
-#
-# output:
-#   - the escaped string is stored in a variable of the same name
-#     but suffixed with an underscore
-#
-escape() {
-    eval '_1=$'"$1"
-    _2="s/'/'\\\\''/g"
-    _1=\'`printf "%s" "$_1" | sed "$_2"`\'
-    eval "$1"'_=$_1'
-}
-
-# apt-get install libsqlite3-dev
-# git clone --recursive https://github.com/Fylwind/c3r
-
 scp Keys.hs "$vm:$app/Keys.hs"
-escape app
 ssh -T "$vm" <<EOF
-set -e
-cd $app_
+set -eu
+[ -d $app ] ||
+    git clone --recursive $remote $app
+cd $app
 git fetch -p origin
-git reset --hard origin/master
-git submodule update
-cabal sandbox init
-cabal install --dependencies-only
-cabal build --ghc-options=-optl-static
+git reset --hard origin/$branch
+git submodule update --init --recursive
+./build.sh --ghc-options=-optl-static
 EOF
-echo 'Built.'
-rsync -aPvz "$vm:$app/dist/build/$app/$app" "/tmp/$app"
-rsync -aPvz "/tmp/$app" "$srv:/usr/local/bin/$app"
-echo 'Copied executable.'
-ssh -T "$srv" pkill -x "$app"
-echo 'Restarted daemon.'
+echo 'Build complete.'
+
+rsync -az "$vm:$app/dist/build/$app/$app" "/tmp/$app"
+rsync -aPz "/tmp/$app" "$srv:$bindir/$app"
+echo 'Installed executable.'
+
+if ssh -T "$srv" "pkill -x $app"
+then echo 'Restarted daemon.'
+else echo 'No daemon process found.'
+fi
