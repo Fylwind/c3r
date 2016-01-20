@@ -41,20 +41,20 @@ main = do
       autorestart 1 (userStream (processTimeline db myself))
 
 withTwitter :: (MonadIO m, MonadMask m) =>
-               SQLiteHandle -> TwitterM a -> m a
+               Database -> TwitterM a -> m a
 withTwitter db action = do
   (token, secret) <-
-    withTransaction db
-      ((,) <$> getVariable db "token"
-           <*> getVariable db "token_secret")
+    withTransaction db $ \ dbt ->
+      ((,) <$> getVariable dbt "token"
+           <*> getVariable dbt "token_secret")
   (tw, (token', secret')) <-
     runManagerM (twitterAuth ((,) <$> token <*> secret))
-  withTransaction db $ do
-    setVariable db "token" token'
-    setVariable db "token_secret" secret'
+  withTransaction db $ \ dbt -> do
+    setVariable dbt "token" token'
+    setVariable dbt "token_secret" secret'
   runTwitterM tw action
 
-withDatabase :: (SQLiteHandle -> IO a) -> IO a
+withDatabase :: (Database -> IO a) -> IO a
 withDatabase action = do
   withConnection "c3r.db" $ \ db -> do
     upgradeDatabase db
@@ -72,22 +72,20 @@ autorestart delay action = do
       sleepSec delay
       autorestart delay action
 
-getUserIdsWithAttr :: MonadIO m =>
-                      SQLiteHandle -> Text -> JSON.Value -> m [UserId]
-getUserIdsWithAttr db attr val = do
+getUserIdsWithAttr :: MonadIO m => Database -> Text -> JSON.Value -> m [UserId]
+getUserIdsWithAttr db attr val = withTransaction db $ \ dbt -> do
   result <-
-    sqlExec db ["attr" =.. attr, "val" =.. val]
+    sqlExec dbt ["attr" =.. attr, "val" =.. val]
       "SELECT id FROM users WHERE attr = :attr AND val = :val"
   pure $
     case result of
       [rows] -> catMaybes [fromSQLiteValue id | [("id", id)] <- rows]
       _ -> []
 
-loadUserInfo :: MonadIO m =>
-                SQLiteHandle -> UserId -> m (Map Text JSON.Value)
-loadUserInfo db userId = do
+loadUserInfo :: MonadIO m => Transaction -> UserId -> m (Map Text JSON.Value)
+loadUserInfo dbt userId = do
   result <-
-    sqlExec db ["id" =.. userId]
+    sqlExec dbt ["id" =.. userId]
       "SELECT attr, val FROM users WHERE id = :id"
   pure . Map.fromList $
     case result of
@@ -97,58 +95,58 @@ loadUserInfo db userId = do
         | [("attr", attr), ("val", val)] <- rows]
       _ -> []
 
-saveUserInfo :: (MonadIO m, MonadMask m) =>
-                SQLiteHandle -> UserId -> Map Text JSON.Value -> m ()
-saveUserInfo db userId userInfo = do
-  sqlExec_ db ["id" =.. userId]
+saveUserInfo :: MonadIO m =>
+                Transaction -> UserId -> Map Text JSON.Value -> m ()
+saveUserInfo dbt userId userInfo = do
+  sqlExec_ dbt ["id" =.. userId]
     "DELETE FROM users WHERE id = :id"
   for_ (Map.toList userInfo) $ \ (attr, val) -> do
-    insertRow db "users"
+    insertRow dbt "users"
       [ "id" =.. userId
       , "attr" =.. attr
       , "val" =.. val ]
 
-storeUserDiff :: (MonadIO m, MonadMask m) =>
-                 SQLiteHandle
+storeUserDiff :: MonadIO m =>
+                 Transaction
               -> UserId
               -> Map Text JSON.Value
               -> Map Text JSON.Value
               -> m ()
-storeUserDiff db userId oldUserInfo userInfo = do
+storeUserDiff dbt userId oldUserInfo userInfo = do
   time <- getCurrentTime
   let (deletes, inserts) = diffMaps oldUserInfo userInfo
   let updates = Map.toList (setToMap SQL.Null deletes) <>
                 Map.toList (Map.map toSQLiteValue inserts)
   for_ updates $ \ (attr, val) -> do
-    insertRow db "user_updates"
+    insertRow dbt "user_updates"
       [ "time" =.. time
       , "id" =.. userId
       , "attr" =.. attr
       , "val" =.. val ]
 
-updateUserInfo :: (MonadIO m, MonadMask m) =>
-                  SQLiteHandle -> (UserId, Map Text JSON.Value) -> m ()
-updateUserInfo db (userId, userInfo) = withTransaction db $ do
-  oldUserInfo <- loadUserInfo db userId
-  saveUserInfo db userId userInfo
-  storeUserDiff db userId oldUserInfo userInfo
+updateUserInfo :: MonadIO m =>
+                  Database -> (UserId, Map Text JSON.Value) -> m ()
+updateUserInfo db (userId, userInfo) = withTransaction db $ \ dbt -> do
+  oldUserInfo <- loadUserInfo dbt userId
+  saveUserInfo dbt userId userInfo
+  storeUserDiff dbt userId oldUserInfo userInfo
 
-updateUser :: (MonadManager r m, MonadMask m) =>
-              SQLiteHandle
+updateUser :: MonadManager r m =>
+              Database
            -> JSON.Object
            -> m ()
 updateUser db user = do
   followerIds <- Set.fromList <$> getOldFollowerIds db
   updateUserWithFollowerIds followerIds db user
 
-updateUserWithFollowerIds :: (MonadManager r m, MonadMask m) =>
-                             Set UserId -> SQLiteHandle -> JSON.Object -> m ()
+updateUserWithFollowerIds :: MonadManager r m =>
+                             Set UserId -> Database -> JSON.Object -> m ()
 updateUserWithFollowerIds followerIds db user =
   augmentUserInfo db followerIds user >>=
   traverse_ (updateUserInfo db)
 
-augmentUserInfo :: (MonadManager r m, MonadMask m) =>
-                   SQLiteHandle
+augmentUserInfo :: MonadManager r m =>
+                   Database
                 -> Set UserId
                 -> JSON.Object
                 -> m (Maybe (UserId, Map Text JSON.Value))
@@ -161,10 +159,10 @@ augmentUserInfo db followerIds user =
       & ix "url" (jsonText (dereferenceUrl db))
   where ignoredUserEntries = ["entities", "id", "id_str", "status"]
 
-getOldFriendsIds :: MonadIO m => SQLiteHandle -> m [UserId]
+getOldFriendsIds :: MonadIO m => Database -> m [UserId]
 getOldFriendsIds db = getUserIdsWithAttr db "following" (JSON.Bool True)
 
-getOldFollowerIds :: MonadIO m => SQLiteHandle -> m [UserId]
+getOldFollowerIds :: MonadIO m => Database -> m [UserId]
 getOldFollowerIds db = getUserIdsWithAttr db "follower" (JSON.Bool True)
 
 userTrackerFrequency :: Num a => a
@@ -173,7 +171,7 @@ userTrackerFrequency = 3600
 userTrackerInitialDelay :: Num a => a
 userTrackerInitialDelay = 60 * 15
 
-userTracker :: MonadTwitter r m => SQLiteHandle -> User -> m ()
+userTracker :: MonadTwitter r m => Database -> User -> m ()
 userTracker db myself = fork_ . autorestart 60 . forever $ do
   sleepSec userTrackerInitialDelay
   oldFriendIds   <- Set.fromList <$> getOldFriendsIds db
@@ -191,7 +189,7 @@ userTracker db myself = fork_ . autorestart 60 . forever $ do
   where myName = myself ^. userScreenName
         myId   = myself ^. userId
 
-dereferenceUrl :: MonadManager r m => SQLiteHandle -> Text -> m Text
+dereferenceUrl :: MonadManager r m => Database -> Text -> m Text
 dereferenceUrl db url | not (isShort url) = pure url
                       | otherwise         = deref url
   where
@@ -199,16 +197,16 @@ dereferenceUrl db url | not (isShort url) = pure url
     isShort url = Text.isPrefixOf "http://t.co/"  url ||
                   Text.isPrefixOf "https://t.co/" url
 
-    getCachedValue key = do
+    getCachedValue key = withTransaction db $ \ dbt -> do
       result <- tryWith (undefined :: DatabaseError) $
-                sqlExec db ["key" =.. key]
+                sqlExec dbt ["key" =.. key]
                 "SELECT (value) FROM url_cache WHERE key = :key;"
       pure $ case result of
         Right [[[(_, x)]]] -> fromSQLiteValue x
         _                  -> Nothing
 
-    setCachedValue key value = do
-      sqlExec_ db ["key" =.. key, "value" =.. value]
+    setCachedValue key value = withTransaction db $ \ dbt -> do
+      sqlExec_ dbt ["key" =.. key, "value" =.. value]
         "INSERT OR REPLACE INTO url_cache (key, value) VALUES (:key, :value);"
 
     deref url = do
@@ -235,9 +233,9 @@ findRedirect url = do
     List.lookup HTTP.hLocation . HTTP.responseHeaders =<<
     eitherToMaybe response
 
-initializeUrlCacheTable :: MonadIO m => SQLiteHandle -> m ()
-initializeUrlCacheTable db =
-  createTable db "url_cache" ["key TEXT PRIMARY KEY", "value"]
+initializeUrlCacheTable :: MonadIO m => Transaction -> m ()
+initializeUrlCacheTable dbt =
+  createTable dbt "url_cache" ["key TEXT PRIMARY KEY", "value"]
 
 fromJSON' :: FromJSON a => JSON.Value -> Maybe a
 fromJSON' x =
@@ -262,30 +260,30 @@ jsonText :: Applicative f => (Text -> f Text) -> JSON.Value -> f JSON.Value
 jsonText f (JSON.String x) = JSON.String <$> f x
 jsonText _ t = pure t
 
-initializeVariableTable :: MonadIO m => SQLiteHandle -> m ()
-initializeVariableTable db =
-  createTable db "meta" ["key TEXT PRIMARY KEY", "value"]
+initializeVariableTable :: MonadIO m => Transaction -> m ()
+initializeVariableTable dbt =
+  createTable dbt "meta" ["key TEXT PRIMARY KEY", "value"]
 
 getVariable :: (MonadIO m, SQLiteValue a) =>
-               SQLiteHandle -> String -> m (Maybe a)
-getVariable db key = liftIO $ do
+               Transaction -> String -> m (Maybe a)
+getVariable dbt key = liftIO $ do
   result <- tryWith (undefined :: DatabaseError) $
-            sqlExec db ["key" =. SQL.Text key]
+            sqlExec dbt ["key" =. SQL.Text key]
             "SELECT value FROM meta WHERE key = :key"
   pure $ case result of
     Right [[[(_, x)]]] -> fromSQLiteValue x
     _                  -> Nothing
 
 setVariable :: (MonadIO m, SQLiteValue a) =>
-               SQLiteHandle -> String -> a -> m ()
-setVariable db key value =
-  sqlExec_ db ["key" =. SQL.Text key, "value" =.. value]
+               Transaction -> String -> a -> m ()
+setVariable dbt key value =
+  sqlExec_ dbt ["key" =. SQL.Text key, "value" =.. value]
     "INSERT OR REPLACE INTO meta (key, value) VALUES (:key, :value);"
 
-logMessage :: MonadIO m => SQLiteHandle -> String -> m ()
-logMessage db message = do
+logMessage :: MonadIO m => Database -> String -> m ()
+logMessage db message = withTransaction db $ \ dbt -> do
   now <- getCurrentTime
-  insertRow db "log" ["time" =.. now, "message" =.. message]
+  insertRow dbt "log" ["time" =.. now, "message" =.. message]
 
 data DStatus =
   DStatus
@@ -402,33 +400,33 @@ makeDDelete time delete =
   (delete ^. delUserId)
   (delete ^. delId)
 
-upgradeDatabase :: MonadIO m => SQLiteHandle -> m ()
-upgradeDatabase db = liftIO $ do
-  version <- fromMaybe 0 <$> getVariable db "version"
+upgradeDatabase :: MonadIO m => Database -> m ()
+upgradeDatabase db = withTransaction db $ \ dbt -> do
+  version <- fromMaybe 0 <$> getVariable dbt "version"
   when (version /= currentVersion) $ do
-    upgradeFrom (version :: Int)
+    upgradeFrom dbt (version :: Int)
   where
 
     currentVersion :: Int
     currentVersion = 1
 
-    upgradeFrom 0 = do
-      initializeVariableTable db
+    upgradeFrom dbt 0 = do
+      initializeVariableTable dbt
 
       -- create various tables
-      initializeUrlCacheTable db
-      createTable db "log" ["time", "message"]
-      createTable db "statuses" fieldNames_DStatus
-      createTable db "deletes"  fieldNames_DDelete
-      createTable db "misc_stream_msgs" ["time", "data"]
-      createTable db "users" ["id", "attr", "val"]
-      createTable db "user_updates" ["time", "id", "attr", "val"]
+      initializeUrlCacheTable dbt
+      createTable dbt "log" ["time", "message"]
+      createTable dbt "statuses" fieldNames_DStatus
+      createTable dbt "deletes"  fieldNames_DDelete
+      createTable dbt "misc_stream_msgs" ["time", "data"]
+      createTable dbt "users" ["id", "attr", "val"]
+      createTable dbt "user_updates" ["time", "id", "attr", "val"]
 
       -- upgrade done
-      setVariable db "version" currentVersion
-      putStrLn' "database initialized."
+      setVariable dbt "version" currentVersion
+      putStrLn' "Database initialized."
 
-    upgradeFrom v = throwM (Abort ("unknown database version: " <> show v))
+    upgradeFrom _ v = throwM (Abort ("unknown database version: " <> show v))
 
 twitterAuth :: MonadManager r m =>
                Maybe (ByteString, ByteString)
@@ -441,7 +439,7 @@ twitterAuth Nothing = do
   cred <- authorize cred pin
   twitterAuth (Just cred)
 twitterAuth (Just cred) = do
-  putStrLn' "Login successful.\n"
+  putStrLn' "Login successful."
   pure (newTWInfo cred, cred)
 
 simpleParse :: (P.Stream s Identity t, Show t) =>
@@ -487,8 +485,7 @@ sleepSec = threadDelay . round . (1e6 *)
 
 -- todo: rewrite this using JSON.Value instead of Twitter.Types
 -- perhaps with the help of lens combinators (is there a way to chain 'at' for nested maps?)
-processTimeline :: MonadTwitter r m =>
-                   SQLiteHandle -> User -> JSON.Value -> m ()
+processTimeline :: MonadTwitter r m => Database -> User -> JSON.Value -> m ()
 processTimeline db myself (JSON.Object msg) = do
   now <- getCurrentTime
   processStreamMsg db myself msg now
@@ -496,7 +493,7 @@ processTimeline _ _ _ =
   hPutStrLn' stderr "processTimeline: invalid stream message"
 
 processStreamMsg :: MonadTwitter r m =>
-                    SQLiteHandle -> User -> JSON.Object -> UTCTime -> m ()
+                    Database -> User -> JSON.Object -> UTCTime -> m ()
 processStreamMsg db myself msg now
 
   -- error
@@ -509,8 +506,9 @@ processStreamMsg db myself msg now
       fork_ $ do
         for_ (rtStatus ^. at "user" >>= asJSONObject) (updateUser db)
         for_ (status ^. at "user" >>= asJSONObject) (updateUser db)
-      for_ (fromJSON' (JSON.Object status))
-        (insertRow db "statuses" . makeDRtStatus now)
+      for_ (fromJSON' (JSON.Object status)) $ \ status' ->
+        withTransaction db $ \ dbt ->
+          insertRow dbt "statuses" (makeDRtStatus now status')
 
   -- status
   | Just _ <- msg ^. at "id" = do
@@ -518,24 +516,27 @@ processStreamMsg db myself msg now
       fork_ $ do
         for_ (status ^. at "user" >>= asJSONObject) (updateUser db)
       for_ (fromJSON' (JSON.Object status)) $ \ status' -> do
-        insertRow db "statuses" (makeDStatus now status')
+        withTransaction db $ \ dbt ->
+          insertRow dbt "statuses" (makeDStatus now status')
         statusHandler db myself status'
 
   -- delete
   | Just delete <- msg ^. at "delete" = do
-      for_ (fromJSON' delete) (insertRow db "deletes" . makeDDelete now)
+      for_ (fromJSON' delete) $ \ delete' ->
+        withTransaction db $ \ dbt ->
+          insertRow dbt "deletes" (makeDDelete now delete')
 
   -- friends
-  | Just _ <- msg ^. at "friends" = do
-      pure () -- ignore
+  | Just _ <- msg ^. at "friends" = pure ()
 
   -- other
-  | otherwise = do
-      insertRow db "misc_stream_msgs"
-        [ "time" =.. now
-        , "data" =.. JSON.Object msg ]
+  | otherwise =
+      withTransaction db $ \ dbt ->
+        insertRow dbt "misc_stream_msgs"
+          [ "time" =.. now
+          , "data" =.. JSON.Object msg ]
 
-statusHandler :: MonadTwitter r m => SQLiteHandle -> User -> Status -> m ()
+statusHandler :: MonadTwitter r m => Database -> User -> Status -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
   (name, _, message) <- parseStatusText sText
   guard (name == myself ^. userScreenName)

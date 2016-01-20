@@ -1,9 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleInstances, OverloadedStrings,
              TypeSynonymInstances #-}
-module Database
-       ( module Database
-       , SQLiteHandle
-       ) where
+module Database where
 import Prelude ()
 import Common
 import Data.Int (Int64)
@@ -20,6 +17,10 @@ import qualified Database.SQLite as SQL
 
 newtype DatabaseError = DatabaseError String deriving (Show, Typeable)
 instance Exception DatabaseError
+
+newtype Database = Database (MVar SQLiteHandle)
+
+newtype Transaction = Transaction SQLiteHandle
 
 class SQLiteValue a where
   fromSQLiteValue :: SQL.Value -> Maybe a
@@ -118,41 +119,52 @@ boundedFromIntegral i
 (=..) :: SQLiteValue a => String -> a -> (String, SQL.Value)
 x =.. y = x =. toSQLiteValue y
 
-withConnection :: String -> (SQLiteHandle -> IO c) -> IO c
-withConnection name = bracket (SQL.openConnection name) SQL.closeConnection
+withConnection :: String -> (Database -> IO c) -> IO c
+withConnection name = bracket acquire release
+  where acquire = do
+          db <- SQL.openConnection name
+          vdb <- newMVar db
+          pure (Database vdb)
+        release (Database vdb) = do
+          modifyMVar_ vdb $ \ db -> do
+            SQL.closeConnection db
+            pure (error "cannot use Database that's already closed")
 
-withTransaction :: (MonadIO m, MonadMask m) =>
-                   SQLiteHandle -> m a -> m a
-withTransaction db =
-  bracket_
-  (sqlExec_' db "BEGIN TRANSACTION;")
-  (sqlExec_' db "COMMIT TRANSACTION;")
+withTransaction :: MonadIO m => Database -> (Transaction -> IO a) -> m a
+withTransaction (Database vdb) action = liftIO $ do
+  mask $ \ restore ->
+    withMVar vdb $ \ db ->
+      let dbt = Transaction db in
+      sqlExec_' dbt "BEGIN TRANSACTION;" *>
+      restore (action dbt) `onException`
+        sqlExec_' dbt "ROLLBACK TRANSACTION;" <*
+      sqlExec_' dbt "COMMIT TRANSACTION;"
 
 sqlExec' :: (MonadIO m, SQL.SQLiteResult a) =>
-            SQLiteHandle -> String -> m [[SQL.Row a]]
-sqlExec' db stmt =
+            Transaction -> String -> m [[SQL.Row a]]
+sqlExec' (Transaction db) stmt =
   liftIO $ throwIfLeft DatabaseError =<< SQL.execStatement db stmt
 
-sqlExec_' :: MonadIO m => SQLiteHandle -> String -> m ()
-sqlExec_' db stmt =
+sqlExec_' :: MonadIO m => Transaction -> String -> m ()
+sqlExec_' (Transaction db) stmt =
   liftIO $ throwIfJust DatabaseError =<< SQL.execStatement_ db stmt
 
 sqlExec :: (MonadIO m, SQLiteRecord r, SQL.SQLiteResult a) =>
-           SQLiteHandle -> r -> String -> m [[SQL.Row a]]
-sqlExec db params stmt =
+           Transaction -> r -> String -> m [[SQL.Row a]]
+sqlExec (Transaction db) params stmt =
   liftIO $ throwIfLeft DatabaseError =<<
            SQL.execParamStatement db stmt
              (mapFst (":" <>) <$> toSQLiteRecord params)
 
 sqlExec_ :: (MonadIO m, SQLiteRecord r) =>
-            SQLiteHandle -> r -> String -> m ()
-sqlExec_ db params stmt =
+            Transaction -> r -> String -> m ()
+sqlExec_ (Transaction db) params stmt =
   liftIO $ throwIfJust DatabaseError =<<
            SQL.execParamStatement_ db stmt
              (mapFst (":" <>) <$> toSQLiteRecord params)
 
 insertRow :: (MonadIO m, SQLiteRecord r) =>
-             SQLiteHandle -> String -> r -> m ()
+             Transaction -> String -> r -> m ()
 insertRow db tableName record =
   sqlExec_ db record' $
     "INSERT INTO " <> tableName <> " (" <> List.intercalate ", " fields <>
@@ -160,7 +172,7 @@ insertRow db tableName record =
   where fields  = fst <$> record'
         record' = toSQLiteRecord record
 
-createTable :: MonadIO m => SQLiteHandle -> String -> [String] -> m ()
+createTable :: MonadIO m => Transaction -> String -> [String] -> m ()
 createTable db name fields =
   sqlExec_' db $
     "CREATE TABLE IF NOT EXISTS " <> name <>
