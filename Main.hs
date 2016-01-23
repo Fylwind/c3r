@@ -34,6 +34,9 @@ instance Exception Abort
 main :: IO ()
 main = do
   hSetEncoding stdout utf8
+  stealthMode <- isStealthMode
+  when stealthMode $
+    putStrLn' "Stealth mode activated"
   withDatabase $ \ db ->
     withTwitter db $ do
       myself <- getMyself
@@ -59,6 +62,11 @@ withDatabase action = do
   withConnection "c3r.db" $ \ db -> do
     upgradeDatabase db
     action db
+
+isStealthMode :: MonadIO m => m Bool
+isStealthMode = do
+  envNoHandlers <- lookupEnv "C3R_STEALTH"
+  pure (envNoHandlers /= Nothing)
 
 -- | Automatically restart if the action fails (after the given delay).
 autorestart :: (MonadIO m, MonadMask m, MonadBaseControl IO m) =>
@@ -128,42 +136,83 @@ updateUserInfo :: MonadIO m =>
                   Database -> (UserId, Map Text JSON.Value) -> m ()
 updateUserInfo db (userId, userInfo) = withTransaction db $ \ dbt -> do
   oldUserInfo <- loadUserInfo dbt userId
-  saveUserInfo dbt userId userInfo
-  storeUserDiff dbt userId oldUserInfo userInfo
+  let userInfo' = repairUserInfo oldUserInfo userInfo
+  saveUserInfo dbt userId userInfo'
+  storeUserDiff dbt userId oldUserInfo userInfo'
+
+-- The API can fail to return certain values, so we need to make an attempt to
+-- repair the result using old data.
+repairUserInfo :: Map Text JSON.Value
+               -> Map Text JSON.Value
+               -> Map Text JSON.Value
+repairUserInfo oldUserInfo userInfo =
+  repairAll possiblyAbsentUserInfoKeys repairAbsentEntry .
+  repairAll possiblyNullUserInfoKeys repairNullEntry $
+  userInfo
+  where
+    repairAll keys repair infoMap =
+      foldr (\ key -> Map.alter (repair key) key) infoMap keys
+    repairAbsentEntry key mval =
+      case mval of
+        Nothing -> Map.lookup key oldUserInfo
+        _ -> mval
+    repairNullEntry key mval =
+      case mval of
+        Just JSON.Null -> Map.lookup key oldUserInfo
+        _ -> mval
+    possiblyAbsentUserInfoKeys =
+      [ "has_extended_profile"
+      , "is_translation_enabled"
+      ]
+    possiblyNullUserInfoKeys =
+      [ "follow_request_sent"
+      , "following"
+      , "notifications"
+      ]
 
 updateUser :: MonadManager r m =>
               Database
            -> JSON.Object
            -> m ()
 updateUser db user = do
-  followerIds <- Set.fromList <$> getOldFollowerIds db
-  updateUserWithFollowerIds followerIds db user
+  friendIds   <- getOldFriendsIds db
+  followerIds <- getOldFollowerIds db
+  updateUserWith friendIds followerIds db user
 
-updateUserWithFollowerIds :: MonadManager r m =>
-                             Set UserId -> Database -> JSON.Object -> m ()
-updateUserWithFollowerIds followerIds db user =
-  augmentUserInfo db followerIds user >>=
+updateUserWith :: MonadManager r m =>
+                             Set UserId
+                          -> Set UserId
+                          -> Database
+                          -> JSON.Object
+                          -> m ()
+updateUserWith friendIds followerIds db user =
+  augmentUserInfo db friendIds followerIds user >>=
   traverse_ (updateUserInfo db)
 
 augmentUserInfo :: MonadManager r m =>
                    Database
                 -> Set UserId
+                -> Set UserId
                 -> JSON.Object
                 -> m (Maybe (UserId, Map Text JSON.Value))
-augmentUserInfo db followerIds user =
+augmentUserInfo db friendIds followerIds user =
   for (user ^. at "id" >>= fromJSON') $ \ userId -> (,) userId <$> do
     hashMapToMap user
       & (`Map.difference` setToMap () (Set.fromList ignoredUserEntries))
-      -- note that "following" is already part of the Twitter API
+      -- although "following" is already part of the Twitter API,
+      -- it is sometimes missing so we recompute it here
+      & ix "following" .~ JSON.Bool (Set.member userId friendIds)
       & ix "follower" .~ JSON.Bool (Set.member userId followerIds)
       & ix "url" (jsonText (dereferenceUrl db))
   where ignoredUserEntries = ["entities", "id", "id_str", "status"]
 
-getOldFriendsIds :: MonadIO m => Database -> m [UserId]
-getOldFriendsIds db = getUserIdsWithAttr db "following" (JSON.Bool True)
+getOldFriendsIds :: MonadIO m => Database -> m (Set UserId)
+getOldFriendsIds db =
+  Set.fromList <$> getUserIdsWithAttr db "following" (JSON.Bool True)
 
-getOldFollowerIds :: MonadIO m => Database -> m [UserId]
-getOldFollowerIds db = getUserIdsWithAttr db "follower" (JSON.Bool True)
+getOldFollowerIds :: MonadIO m => Database -> m (Set UserId)
+getOldFollowerIds db =
+  Set.fromList <$> getUserIdsWithAttr db "follower" (JSON.Bool True)
 
 userTrackerFrequency :: Num a => a
 userTrackerFrequency = 3600
@@ -174,8 +223,8 @@ userTrackerInitialDelay = 60 * 15
 userTracker :: MonadTwitter r m => Database -> User -> m ()
 userTracker db myself = fork_ . autorestart 60 . forever $ do
   sleepSec userTrackerInitialDelay
-  oldFriendIds   <- Set.fromList <$> getOldFriendsIds db
-  oldFollowerIds <- Set.fromList <$> getOldFollowerIds db
+  oldFriendIds   <- getOldFriendsIds db
+  oldFollowerIds <- getOldFollowerIds db
   friendIds   <- Set.fromList <$> getFriendIds myName
   followerIds <- Set.fromList <$> getFollowerIds myName
   let userIds = Set.singleton myId <>
@@ -184,7 +233,8 @@ userTracker db myself = fork_ . autorestart 60 . forever $ do
   for_ (chunkify getUsersById_max (Set.toList userIds)) $ \ userIds' -> do
     users <- getUsersById userIds'
     for_ users $ \ user -> do
-      for_ (asJSONObject user) (updateUserWithFollowerIds followerIds db)
+      for_ (asJSONObject user) $
+        updateUserWith friendIds followerIds db
   sleepSec (userTrackerFrequency - userTrackerInitialDelay)
   where myName = myself ^. userScreenName
         myId   = myself ^. userId
@@ -518,7 +568,9 @@ processStreamMsg db myself msg now
       for_ (fromJSON' (JSON.Object status)) $ \ status' -> do
         withTransaction db $ \ dbt ->
           insertRow dbt "statuses" (makeDStatus now status')
-        statusHandler db myself status'
+        stealthMode <- isStealthMode
+        when (not stealthMode) $
+          statusHandler db myself status'
 
   -- delete
   | Just delete <- msg ^. at "delete" = do
