@@ -31,3 +31,12 @@ Run the program
 ---------------
 
     cabal run
+
+Debugging
+---------
+
+Useful environment variables for debugging:
+
+~~~
+C3R_STEALTH=t C3R_LOG=t
+~~~

@@ -48,6 +48,7 @@ executable c3r
                      , http-types
                      , http-conduit
                      , lens
+                     , lens-aeson
                      , lifted-base
                      , monad-control
                      , mtl

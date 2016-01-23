@@ -8,13 +8,14 @@ import Diff
 import Twitter
 
 import Control.Lens
-import Data.Aeson (FromJSON, ToJSON, fromJSON, toJSON)
+import Data.Aeson (FromJSON, ToJSON, fromJSON)
 import Data.Hashable (Hashable)
 import Data.HashMap.Strict (HashMap)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Web.Twitter.Types.Lens
 import qualified Data.Aeson as JSON
+import qualified Data.Aeson.Lens as JSON
 import qualified Data.Aeson.Encode.Pretty as JP
 import qualified Data.ByteString.Lazy as ByteStringL
 import qualified Data.HashMap.Strict as HashMap
@@ -373,47 +374,72 @@ instance SQLiteRecord DStatus where
     ]
 
 fieldNames_DStatus :: [String]
-fieldNames_DStatus = ["time", "user_id", "id", "text", "data",
-                      "reply_user_id", "reply_status_id",
-                      "rt_user_id", "rt_id"]
+fieldNames_DStatus =
+  [ "time"
+  , "user_id"
+  , "id"
+  , "text"
+  , "data"
+  , "reply_user_id"
+  , "reply_status_id"
+  , "rt_user_id"
+  , "rt_id"
+  ]
 
 -- strip the data that we are storing explicitly
 skippedStatusKeys :: [Text]
-skippedStatusKeys = ["user", "id", "text",
-                     "in_reply_to_user_id",
-                     "in_reply_to_status_id"]
+skippedStatusKeys =
+  [ "id"
+  , "user"
+  , "text"
+  , "in_reply_to_user_id"
+  , "in_reply_to_status_id"
+  -- these add too much bulk
+  , "entities"
+  , "extended_entities"
+  ]
 
 skippedRtKeys :: [Text]
-skippedRtKeys = ["user", "id"]
+skippedRtKeys =
+  [ "user"
+  , "id"
+  , "entities"
+  , "extended_entities"
+  ]
 
-makeDStatus :: UTCTime -> Status -> DStatus
-makeDStatus time status =
-  DStatus
-  time
-  (status ^. statusUser . userId)
-  (status ^. statusId)
-  (status ^. statusText)
-  statusDump
-  (status ^. statusInReplyToUserId)
-  (status ^. statusInReplyToStatusId)
-  Nothing
-  Nothing
+makeDStatus :: UTCTime -> JSON.Object -> Maybe DStatus
+makeDStatus time status = do
+  sUserId <- status ^? ix "user" . ix "id" . JSON._Integer
+  sId <- status ^? ix "id" . JSON._Integer
+  sText <- status ^? ix "text" . JSON._String
+  let sReplyUserId = status ^? ix "in_reply_to_user_id" . JSON._Integer
+  let sReplyStatusId = status ^? ix "in_reply_to_status_id" . JSON._Integer
+  pure $ DStatus
+    time
+    sUserId
+    sId
+    sText
+    statusDump
+    sReplyUserId
+    sReplyStatusId
+    Nothing
+    Nothing
   where statusDump =
-          (`mapJSONObject` toJSON status) $
-          deleteKeysFromHashMap skippedStatusKeys
+          JSON.Object (deleteKeysFromHashMap skippedStatusKeys status)
 
-makeDRtStatus :: UTCTime -> RetweetedStatus -> DStatus
-makeDRtStatus time rt =
-  (makeDStatus time (rt ^. rsRetweetedStatus))
-  { ds_rtUserId = Just (rt ^. rsUser . userId)
-  , ds_rtId     = Just (rt ^. rsId)
-  , ds_data     = statusDump
-  }
+makeDRtStatus :: UTCTime -> JSON.Object -> Maybe DStatus
+makeDRtStatus time rt = do
+  rtStatus <- makeDStatus time =<< rt ^? ix "retweeted_status" . JSON._Object
+  pure $ rtStatus
+    { ds_rtUserId = rt ^? ix "user" . ix "id" . JSON._Integer
+    , ds_rtId     = rt ^? ix "id" . JSON._Integer
+    , ds_data     = statusDump
+    }
   where statusDump =
-          (`mapJSONObject` toJSON rt) $
+          JSON.Object $
           deleteKeysFromHashMap skippedRtKeys .
           (flip HashMap.adjust "retweeted_status" . mapJSONObject $
-           deleteKeysFromHashMap skippedStatusKeys)
+           deleteKeysFromHashMap skippedStatusKeys) $ rt
 
 deleteKeysFromHashMap :: (Eq k, Hashable k) => [k] -> HashMap k v -> HashMap k v
 deleteKeysFromHashMap ks m = foldl' (flip HashMap.delete) m ks
@@ -443,12 +469,11 @@ instance SQLiteRecord DDelete where
 fieldNames_DDelete :: [String]
 fieldNames_DDelete = ["time", "user_id", "status_id"]
 
-makeDDelete :: UTCTime -> Delete -> DDelete
-makeDDelete time delete =
-  DDelete
-  time
-  (delete ^. delUserId)
-  (delete ^. delId)
+makeDDelete :: UTCTime -> JSON.Object -> Maybe DDelete
+makeDDelete time delete = do
+  dUserId <- delete ^? ix "user_id" . JSON._Integer
+  dId <- delete ^? ix "id" . JSON._Integer
+  pure (DDelete time dUserId dId)
 
 upgradeDatabase :: MonadIO m => Database -> m ()
 upgradeDatabase db = withTransaction db $ \ dbt -> do
@@ -502,9 +527,6 @@ pToken x = P.try (x <* P.spaces)
 pTokenS :: P.Stream s m Char => String -> P.ParsecT s u m Text
 pTokenS = (Text.pack <$>) . pToken . P.string
 
-pWord :: P.Stream s m Char => P.ParsecT s u m Text
-pWord = Text.pack <$> some P.alphaNum
-
 -- | Parse the status text to obtain the name of the recipient, names of
 --   directly mentioned users, and the message itself.
 --
@@ -520,11 +542,6 @@ parseArfs :: Text -> Maybe Int
 parseArfs = simpleParse (P.spaces *> parser)
   where parser = length <$> some (pTokenS "arf") <* P.optional (pTokenS ":3")
 
-printStatus :: MonadIO m => Status -> m ()
-printStatus status = putTextLn' (name <> ": " <> text)
-  where name = status ^. statusUser . userScreenName
-        text = status ^. statusText
-
 runHandlers :: Monad m => [Maybe (m ())] -> m ()
 runHandlers (Just x  : _) = x
 runHandlers (Nothing : r) = runHandlers r
@@ -538,6 +555,9 @@ sleepSec = threadDelay . round . (1e6 *)
 processTimeline :: MonadTwitter r m => Database -> User -> JSON.Value -> m ()
 processTimeline db myself (JSON.Object msg) = do
   now <- getCurrentTime
+  env <- lookupEnv "C3R_LOG"
+  when (env /= Nothing && hasn't (ix "friends") msg) $
+    putStrLn' (Text.unpack (Text.decodeUtf8 (prettyJSON msg)))
   processStreamMsg db myself msg now
 processTimeline _ _ _ =
   hPutStrLn' stderr "processTimeline: invalid stream message"
@@ -551,35 +571,39 @@ processStreamMsg db myself msg now
       hPutStrLn' stderr ("processStreamMsg: error: " <> show err)
 
   -- retweet
-  | Just (JSON.Object rtStatus) <- msg ^. at "retweeted_status" = do
+  | Just rtStatus <- msg ^? ix "retweeted_status" . JSON._Object = do
       let status = msg
       fork_ $ do
-        for_ (rtStatus ^. at "user" >>= asJSONObject) (updateUser db)
-        for_ (status ^. at "user" >>= asJSONObject) (updateUser db)
-      for_ (fromJSON' (JSON.Object status)) $ \ status' ->
+        for_ (rtStatus ^? ix "user" >>= asJSONObject) $
+          updateUser db
+        for_ (status ^? ix "user" >>= asJSONObject) $
+          updateUser db
+      for_ (makeDRtStatus now status) $ \ status' ->
         withTransaction db $ \ dbt ->
-          insertRow dbt "statuses" (makeDRtStatus now status')
+          insertRow dbt "statuses" status'
 
   -- status
-  | Just _ <- msg ^. at "id" = do
+  | has (ix "id") msg = do
       let status = msg
       fork_ $ do
-        for_ (status ^. at "user" >>= asJSONObject) (updateUser db)
-      for_ (fromJSON' (JSON.Object status)) $ \ status' -> do
+        for_ (status ^? ix "user" >>= asJSONObject) $
+          updateUser db
+      for_ (makeDStatus now status) $ \ status' -> do
         withTransaction db $ \ dbt ->
-          insertRow dbt "statuses" (makeDStatus now status')
-        stealthMode <- isStealthMode
-        when (not stealthMode) $
-          statusHandler db myself status'
+          insertRow dbt "statuses" status'
+      stealthMode <- isStealthMode
+      when (not stealthMode) $
+        statusHandler db myself status
 
   -- delete
-  | Just delete <- msg ^. at "delete" = do
-      for_ (fromJSON' delete) $ \ delete' ->
+  | Just delete <- msg ^? ix "delete" . JSON._Object
+                        . ix "status" . JSON._Object = do
+      for_ (makeDDelete now delete) $ \ delete' -> do
         withTransaction db $ \ dbt ->
-          insertRow dbt "deletes" (makeDDelete now delete')
+          insertRow dbt "deletes" delete'
 
   -- friends
-  | Just _ <- msg ^. at "friends" = pure ()
+  | has (ix "friends") msg = pure ()
 
   -- other
   | otherwise =
@@ -588,8 +612,11 @@ processStreamMsg db myself msg now
           [ "time" =.. now
           , "data" =.. JSON.Object msg ]
 
-statusHandler :: MonadTwitter r m => Database -> User -> Status -> m ()
+statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
+  sName <- status ^? ix "user" . ix "screen_name" . JSON._String
+  sText <- status ^? ix "text" . JSON._String
+  sId   <- status ^? ix "id" . JSON._Integer
   (name, _, message) <- parseStatusText sText
   guard (name == myself ^. userScreenName)
   pure $ runHandlers
@@ -615,6 +642,3 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
         logMessage db "replied"
 
     ]
-  where sName = status ^. statusUser . userScreenName
-        sText = status ^. statusText
-        sId   = status ^. statusId
