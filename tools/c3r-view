@@ -1,5 +1,45 @@
 #!/usr/bin/env python
-import argparse, json, sqlite3, sys
+from __future__ import unicode_literals
+import argparse, contextlib, io, json, sqlite3, subprocess, sys
+
+def cache_func(func):
+    cache = {}
+    def wrapped_func(*args, **kwargs):
+        key = (tuple(args), tuple(sorted(kwargs.items())))
+        try:
+            return cache[key]
+        except KeyError:
+            pass
+        value = func(*args, **kwargs)
+        cache[key] = value
+        return value
+    return wrapped_func
+
+def wrap_lines(string, prefix="", suffix=""):
+    return "\n".join(prefix + line + suffix for line in string.split("\n"))
+
+def wrap_pipe_as_text_file(pipe, mode, *args, **kwargs):
+    pipe = Wrapper(pipe)
+    if mode == "r":
+        readable = True
+    elif mode == "w":
+        readable = False
+    else:
+        raise ValueError("invalid mode: " + repr(mode))
+    if not hasattr(pipe, "readable"):
+        pipe.readable = lambda: readable
+    if not hasattr(pipe, "writable"):
+        pipe.writable = lambda: not readable
+    if not hasattr(pipe, "seekable"):
+        pipe.seekable = lambda: False
+    return io.TextIOWrapper(pipe, *args, **kwargs)
+
+@contextlib.contextmanager
+def pager():
+    p = subprocess.Popen(["less"], stdin=subprocess.PIPE)
+    yield wrap_pipe_as_text_file(p.stdin, "w")
+    p.stdin.close()
+    p.wait()                            # needed otherwise pager will exit
 
 def json_canonical(data, ensure_ascii=False, sort_keys=True, **kwargs):
     return json.dumps(
@@ -12,11 +52,30 @@ def json_canonical(data, ensure_ascii=False, sort_keys=True, **kwargs):
 def json_pretty(data):
     return json_canonical(data, indent=4, separators=(",", ": "))
 
-class User(object):
+class JSONObject(object):
     def __init__(self, data):
         self.__dict__ = data
     def __str__(self):
         return json_pretty(vars(self))
+
+class User(JSONObject):
+    pass
+
+class Status(JSONObject):
+    pass
+
+def parse_status(time, user_id, id, text, data, reply_user_id,
+                 reply_status_id, rt_user_id, rt_id):
+    data = json.loads(data)
+    data["time"] = time
+    data["user_id"] = user_id
+    data["id"] = id
+    data["text"] = text
+    data["reply_user_id"] = reply_user_id
+    data["reply_status_id"] = reply_status_id
+    data["rt_user_id"] = rt_user_id
+    data["rt_id"] = rt_id
+    return Status(data)
 
 class Diff(object):
     def __init__(self, deletes, inserts, metadata=None):
@@ -30,8 +89,16 @@ class Diff(object):
           + ["+ {0}: {1}".format(k, v) for k, v in self.inserts])
         return json_pretty(vars(self))
 
+DEFAULT_DB_FILENAME = "c3r.db"
+
+class Wrapper(object):
+    def __init__(self, obj):
+        self.__obj = obj
+    def __getattr__(self, name):
+        return getattr(self.__obj, name)
+
 class DB(object):
-    def __init__(self, filename="c3r.db"):
+    def __init__(self, filename=DEFAULT_DB_FILENAME):
         self.db = sqlite3.connect(filename)
 
     def user(self, user):
@@ -66,6 +133,28 @@ class DB(object):
                 "SELECT time, attr, val FROM user_updates WHERE id == ?",
                 [user_id])])
 
+    def get_statuses(self, user=None, users=None, limit=65536, **kwargs):
+        users = [] if users is None else list(users)
+        if user is not None:
+            users.append(user)
+        user_ids = [self.user(user).id for user in users]
+        filters = []
+        params = []
+        for user_id in user_ids:
+            if filters:
+                filters.append("OR user_id = ?")
+            else:
+                filters.append("WHERE user_id = ?")
+            params.append(user_id)
+        return (parse_status(*args) for args in self.db.execute(
+            """
+            SELECT *
+            FROM statuses {0}
+            ORDER BY rowid DESC LIMIT ?
+            """
+            .format(" ".join(filters)),
+            params + [limit]))
+
 def merge_diffs(diff1, diff2):
     diff2_deletes = set(diff2.deletes)
     diff1_inserts = [insert for insert in diff1.inserts
@@ -83,12 +172,83 @@ def merge_adjacent_diffs(diffs):
             new_diffs.append(diff)
     return new_diffs
 
-p = argparse.ArgumentParser()
-p.add_argument("user")
-args = p.parse_args()
+def userlog(db, user):
+    user = db.user(user)
+    with pager() as stream:
+        first = True
+        for diff in reversed(db.get_user_history(user)):
+            if first:
+                first = False
+            else:
+                stream.write("\n")
+            stream.write(str(diff))
+            stream.write("\n")
+            stream.flush()
 
-db = DB()
-user = db.user(args.user)
-for diff in db.get_user_history(user):
-    print(diff)
-    print("")
+@cache_func
+def generate_user_color(user_id):
+    import hashlib
+    h = hashlib.sha1(str(user_id).encode("ascii")).digest()
+    i = sum(c << (8 * i) for i, c in enumerate(h))
+    return (i - 2) % 6 + 1
+
+def statuslog(db, users, limit):
+    @cache_func
+    def lookup_screen_name(user_id):
+        if user_id is not None:
+            return getattr(db.user(user_id), "screen_name", "???")
+    with pager() as stream:
+        for status in db.get_statuses(users=users, limit=limit):
+            metadata = "{0} {1}".format(
+                status.time.split(".")[0] + "Z",
+                status.id,
+            )
+            if status.reply_status_id is not None:
+                metadata += " reply:{0}/{1}".format(
+                    lookup_screen_name(status.reply_user_id),
+                    status.reply_status_id,
+                )
+            text = status.text.replace("&lt;", "<").replace("&gt;", ">")
+            text = wrap_lines(text, prefix="\x1b[1m", suffix="\x1b[0m")
+            template = "[\x1b[1;3{1}m{2}\x1b[0m] {0}\n{3}\n\n"
+            stream.write(template.format(
+                metadata,
+                generate_user_color(status.user_id),
+                lookup_screen_name(status.user_id),
+                text,
+            ))
+            stream.flush()
+
+def argparser():
+    p = argparse.ArgumentParser()
+    p.add_argument("-f", "--db", default=DEFAULT_DB_FILENAME)
+    sp = p.add_subparsers(help="subcommand")
+
+    spp = sp.add_parser("userlog")
+    spp.add_argument("user")
+    spp.set_defaults(func=userlog)
+
+    spp = sp.add_parser("statuslog")
+    spp.add_argument("users", metavar="user", nargs="*")
+    spp.add_argument("-n", "--limit", default=65536)
+    spp.set_defaults(func=statuslog)
+
+    return p
+
+def main():
+    parser = argparser()
+    args = vars(parser.parse_args())
+    func = args.pop("func", None)
+    if not func:
+        parser.print_usage()
+        exit(1)
+    db = DB(args.pop("db"))
+    try:
+        func(db, **args)
+    except IOError as e:
+        import errno
+        if e.errno != errno.EPIPE:
+            raise
+
+if __name__ == "__main__":
+    main()
