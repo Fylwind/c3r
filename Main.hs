@@ -42,7 +42,10 @@ main = do
     withTwitter db $ do
       myself <- getMyself
       userTracker db myself
-      autorestart 1 (userStream (processTimeline db myself))
+      autorestart 1 $ do
+        void . withWatchdog 7200 $ \ watchdog -> do
+          userStream (processTimeline watchdog db myself)
+        logMessage db "warning: watchdog timer expired! restarting..."
 
 withTwitter :: (MonadIO m, MonadMask m) =>
                Database -> TwitterM a -> m a
@@ -71,7 +74,7 @@ isStealthMode = do
 
 -- | Automatically restart if the action fails (after the given delay).
 autorestart :: (MonadIO m, MonadMask m, MonadBaseControl IO m) =>
-               Double -> m b -> m b
+               Double -> m a -> m a
 autorestart delay action = do
   result <- tryAny action
   case result of
@@ -547,19 +550,19 @@ runHandlers (Just x  : _) = x
 runHandlers (Nothing : r) = runHandlers r
 runHandlers []            = pure ()
 
-sleepSec :: MonadIO m => Double -> m ()
-sleepSec = threadDelay . round . (1e6 *)
-
 -- todo: rewrite this using JSON.Value instead of Twitter.Types
 -- perhaps with the help of lens combinators (is there a way to chain 'at' for nested maps?)
-processTimeline :: MonadTwitter r m => Database -> User -> JSON.Value -> m ()
-processTimeline db myself (JSON.Object msg) = do
+processTimeline :: MonadTwitter r m =>
+                   Watchdog -> Database -> User -> JSON.Value -> m ()
+processTimeline watchdog db myself (JSON.Object msg) = do
+  kickWatchdog watchdog
   now <- getCurrentTime
   env <- lookupEnv "C3R_LOG"
   when (env /= Nothing && hasn't (ix "friends") msg) $
     putStrLn' (Text.unpack (Text.decodeUtf8 (prettyJSON msg)))
   processStreamMsg db myself msg now
-processTimeline _ _ _ =
+processTimeline watchdog _ _ _ = do
+  kickWatchdog watchdog
   hPutStrLn' stderr "processTimeline: invalid stream message"
 
 processStreamMsg :: MonadTwitter r m =>

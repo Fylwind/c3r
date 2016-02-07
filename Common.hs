@@ -17,6 +17,7 @@ import Calico.Text.MonadIO
 import Data.Time (UTCTime)
 import System.Directory
 import System.Random (Random)
+import qualified System.Timeout
 import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Time as Time
@@ -38,6 +39,12 @@ chunkify k l | k > 0     = chunk : chunkify k rest
 showT :: Show a => a -> Text
 showT = Text.pack . show
 
+sleepSec :: MonadIO m => Double -> m ()
+sleepSec t = threadDelay (round (1e6 * t))
+
+timeoutSec :: MonadIO m => Double -> IO a -> m (Maybe a)
+timeoutSec t m = liftIO (System.Timeout.timeout (round (1e6 * t)) m)
+
 throwIfLeft :: (MonadThrow m, Exception e) => (b -> e) -> Either b a -> m a
 throwIfLeft f (Left  e) = throwM (f e)
 throwIfLeft _ (Right x) = pure x
@@ -56,6 +63,42 @@ tryAny action = do
 
 tryWith :: (MonadCatch m, Exception e) => e -> m a -> m (Either e a)
 tryWith _ = try
+
+waitEither :: (MonadIO m, MonadMask m, MonadBaseControl IO m) =>
+              m a -> m a -> m (Either SomeException a)
+waitEither action1 action2 = do
+  result <- newEmptyMVar
+  mask $ \ unmask -> do
+    thread1 <- fork (try (unmask action1) >>= putMVar result)
+    thread2 <- fork (try (unmask action2) >>= putMVar result)
+    unmask (readMVar result) `finally` do
+      killThread thread1
+      killThread thread2
+
+newtype Watchdog = Watchdog (MVar ())
+
+newWatchdog :: MonadIO m => m Watchdog
+newWatchdog = Watchdog <$> newEmptyMVar
+
+withWatchdog :: (MonadIO m, MonadMask m, MonadBaseControl IO m) =>
+                Double
+             -> (Watchdog -> m a)
+             -> m (Either SomeException (Maybe a))
+withWatchdog interval action = do
+  watchdog <- newWatchdog
+  waitEither
+    (Nothing <$ watchdogThread watchdog interval)
+    (Just <$> action watchdog)
+
+watchdogThread :: MonadIO m => Watchdog -> Double -> m ()
+watchdogThread watchdog@(Watchdog var) interval = do
+  result <- timeoutSec interval (takeMVar var)
+  case result of
+    Nothing -> pure ()
+    Just () -> watchdogThread watchdog interval
+
+kickWatchdog :: MonadIO m => Watchdog -> m ()
+kickWatchdog (Watchdog var) = void (tryPutMVar var ())
 
 randomRIO :: (MonadIO m, Random a) => (a, a) -> m a
 randomRIO = liftIO . Random.randomRIO
