@@ -25,6 +25,9 @@ import qualified Data.Text as Text
 import qualified Data.Time as Time
 import qualified System.Random as Random
 
+foreign import ccall unsafe "math.h log1p"
+  log1p :: Double -> Double
+
 eitherToMaybe :: Either b a -> Maybe a
 eitherToMaybe (Left  _) = Nothing
 eitherToMaybe (Right x) = Just x
@@ -40,6 +43,11 @@ chunkify k l | k > 0     = chunk : chunkify k rest
 
 showT :: Show a => a -> Text
 showT = Text.pack . show
+
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM mCondition action = do
+  condition <- mCondition
+  when condition action
 
 sleepSec :: MonadIO m => Double -> m ()
 sleepSec t = threadDelay (round (1e6 * t))
@@ -111,9 +119,9 @@ randomRIO = liftIO . Random.randomRIO
 randomDouble :: MonadIO m => (Double, Double) -> m Double
 randomDouble = randomRIO
 
-randomExponential :: (Floating b, MonadIO f, Random b) => b -> f b
+randomExponential :: MonadIO m => Double -> m Double
 randomExponential mean =
-  (\ x -> (-log x) * mean) <$> randomIO
+  (\ x -> (-log1p (-x)) * mean) <$> randomIO
 
 randomFiber :: MonadIO m => [[a]] -> m [a]
 randomFiber []               = pure []
@@ -130,17 +138,20 @@ sigmoidTanh x = 0.5 * (tanh x + 1)
 invSigmoidTanh :: Floating a => a -> a
 invSigmoidTanh x = atanh (2 * x - 1)
 
-gradualTransition :: Floating a =>
-                     a                  -- ^ tolerance (e.g. 0.01 for 1%)
-                  -> a                  -- ^ duration of the transition phase
-                  -> a                  -- ^ old value
-                  -> a                  -- ^ new value
-                  -> a                  -- ^ time since start of transition
-                  -> a
-gradualTransition tolerance duration old new t =
-  old * (new / old) ** sigmoidTanh (t / duration * (t1 + t0) - t0)
-  where t0 = -invSigmoidTanh (log (1 + tolerance) / log (new / old))
-        t1 = invSigmoidTanh (log (1 - tolerance) / log (new / old) + 1)
+gradualTransition :: Double             -- ^ tolerance for old value
+                  -> Double             -- ^ tolerance for new value
+                  -> Double             -- ^ duration of the transition phase
+                  -> Double             -- ^ old value
+                  -> Double             -- ^ new value
+                  -> Double             -- ^ time since start of transition
+                  -> Double
+gradualTransition oldTol newTol duration old new t =
+  old' * ratio ** sigmoidTanh (t / duration * (t1 + t0) - t0)
+  where t0 = -invSigmoidTanh (log1p oldTol / logRatio)
+        t1 = invSigmoidTanh (log1p (-newTol) / logRatio + 1)
+        ratio = new / old'
+        logRatio = log ratio
+        old' = old / (1 + oldTol)
 
 _s :: String -> String
 _s = id

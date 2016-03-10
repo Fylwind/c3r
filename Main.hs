@@ -35,9 +35,8 @@ instance Exception Abort
 main :: IO ()
 main = do
   hSetEncoding stdout utf8
-  stealthMode <- isStealthMode
-  when stealthMode $
-    putStrLn' "Stealth mode activated"
+  whenM isDebugMode $ do
+    putStrLn' "[note] Debug mode active."
   withDatabase $ \ db ->
     withTwitter db $ do
       myself <- getMyself
@@ -65,9 +64,9 @@ withDatabase action = do
     upgradeDatabase db
     action db
 
-isStealthMode :: MonadIO m => m Bool
-isStealthMode = do
-  envNoHandlers <- lookupEnv "C3R_STEALTH"
+isDebugMode :: MonadIO m => m Bool
+isDebugMode = do
+  envNoHandlers <- lookupEnv "C3R_DEBUG"
   pure (envNoHandlers /= Nothing)
 
 -- | Automatically restart if the action fails (after the given delay).
@@ -332,11 +331,14 @@ setVariable dbt key value =
   sqlExec_ dbt ["key" =. SQL.Text key, "value" =.. value]
     "INSERT OR REPLACE INTO meta (key, value) VALUES (:key, :value);"
 
+-- | WARNING: do not do this inside a transaction or it will deadlock!
 logMessage :: MonadIO m => Database -> String -> m ()
 logMessage db message = do
   now <- getCurrentTime
   withTransaction db $ \ dbt -> do
     insertRow_ dbt "log" ["time" =.. now, "message" =.. message]
+  whenM isDebugMode $ do
+    putStrLn' ("[" <> show now <> "] " <> message)
 
 data DStatus =
   DStatus
@@ -612,9 +614,7 @@ processStreamMsg db myself msg now
       for_ (makeDStatus now status) $ \ status' -> do
         withTransaction db $ \ dbt ->
           insertRow_ dbt "statuses" status'
-      stealthMode <- isStealthMode
-      when (not stealthMode) $
-        statusHandler db myself status
+      statusHandler db myself status
 
   -- delete
   | Just delete <- msg ^? ix "delete" . JSON._Object
@@ -636,8 +636,8 @@ processStreamMsg db myself msg now
 replyDelay :: MonadIO m => m Double
 replyDelay = do
   now <- getCurrentTime
-  let t = realToFrac (now `diffUTCTime` read "2016-03-10 12:00:00 EST")
-  let mean = gradualTransition 0.01 (86400 * 2) 450 86400 t
+  let t = realToFrac (now `diffUTCTime` read "2016-03-10 16:00:00 EST")
+  let mean = gradualTransition 10 0.3 (86400 * 2) 450 86400 t
   randomExponential mean
 
 statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
@@ -657,11 +657,11 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
     , do
       count <- parseArfs message
       pure . fork_ $ do
-        factor <- randomRIO (0.01, 1 :: Double)
-        let count' = round (fromIntegral count * factor)
+        factor <- randomIO
+        let count' = round (fromIntegral count * (1 - factor) :: Double)
             msg    = mconcat (List.replicate count' "arf") <> " :3"
-        postReplyR sName msg sId
-        logMessage db ("replied arfs to " <> show sId)
+        delay <- replyDelay
+        scheduleTaskSecFromNow db delay (A_Reply sName msg sId)
 
     , do
       awoo <- parseAwoo message
@@ -714,23 +714,27 @@ scheduleTaskSecFromNow db delay action = do
 taskRunner :: MonadTwitter r m => Database -> m ()
 taskRunner db = autorestart 1 . forever $ do
   now <- getCurrentTime
-  mAction <- withTransaction db $ \ dbt -> do
+  mTask <- withTransaction db $ \ dbt -> do
     dueTasks <- sqlExec dbt ["now" =.. now]
       "SELECT * FROM tasks WHERE time <= :now ORDER BY time LIMIT 1"
     case dueTasks of
-      [[taskFromSQLiteRecord -> Just (Task taskId (TaskInfo _ action))]] -> do
-        logMessage db ("Running task " <> show taskId)
+      [[taskFromSQLiteRecord -> Just task@(Task taskId _)]] -> do
         sqlExec_ dbt ["id" =.. taskId]
-          "DELETE FROM tasks WHERE task_id = :id"
-        pure (Just action)
+          "DELETE FROM tasks WHERE id = :id"
+        pure (Just task)
       _ -> pure Nothing
-  case mAction of
+  case mTask of
     Nothing -> pure ()
-    Just action -> fork_ (runAction db action)
+    Just (Task taskId (TaskInfo _ action)) -> do
+      logMessage db ("Running task " <> show taskId)
+      fork_ (runAction db action)
   sleepSec =<< randomExponential 1
 
 runAction :: MonadTwitter r m => Database -> Action -> m ()
-runAction db (A_Reply screenName text statusId) = do
-  postReplyR screenName text statusId
-  logMessage db ("replied to " <> show statusId <>
-                 " with " <> show (screenName, text))
+runAction db action =
+  case action of
+    A_Reply screenName text statusId -> do
+      whenM (not <$> isDebugMode) $ do
+        postReplyR screenName text statusId
+      logMessage db ("replied to " <> show statusId <>
+                     " with " <> show (screenName, text))
