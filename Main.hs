@@ -41,11 +41,9 @@ main = do
   withDatabase $ \ db ->
     withTwitter db $ do
       myself <- getMyself
-      userTracker db myself
-      autorestart 1 $ do
-        void . withWatchdog 7200 $ \ watchdog -> do
-          userStream (processTimeline watchdog db myself)
-        logMessage db "warning: watchdog timer expired! restarting..."
+      fork_ (userTracker db myself)
+      fork_ (taskRunner db)
+      timelineProcessor db myself
 
 withTwitter :: (MonadIO m, MonadMask m) =>
                Database -> TwitterM a -> m a
@@ -113,7 +111,7 @@ saveUserInfo dbt userId userInfo = do
   sqlExec_ dbt ["id" =.. userId]
     "DELETE FROM users WHERE id = :id"
   for_ (Map.toList userInfo) $ \ (attr, val) -> do
-    insertRow dbt "users"
+    insertRow_ dbt "users"
       [ "id" =.. userId
       , "attr" =.. attr
       , "val" =.. val ]
@@ -130,7 +128,7 @@ storeUserDiff dbt userId oldUserInfo userInfo = do
   let updates = Map.toList (setToMap SQL.Null deletes) <>
                 Map.toList (Map.map toSQLiteValue inserts)
   for_ updates $ \ (attr, val) -> do
-    insertRow dbt "user_updates"
+    insertRow_ dbt "user_updates"
       [ "time" =.. time
       , "id" =.. userId
       , "attr" =.. attr
@@ -225,7 +223,7 @@ userTrackerInitialDelay :: Num a => a
 userTrackerInitialDelay = 60 * 15
 
 userTracker :: MonadTwitter r m => Database -> User -> m ()
-userTracker db myself = fork_ . autorestart 60 . forever $ do
+userTracker db myself = autorestart 60 . forever $ do
   sleepSec userTrackerInitialDelay
   oldFriendIds   <- getOldFriendsIds db
   oldFollowerIds <- getOldFollowerIds db
@@ -335,9 +333,10 @@ setVariable dbt key value =
     "INSERT OR REPLACE INTO meta (key, value) VALUES (:key, :value);"
 
 logMessage :: MonadIO m => Database -> String -> m ()
-logMessage db message = withTransaction db $ \ dbt -> do
+logMessage db message = do
   now <- getCurrentTime
-  insertRow dbt "log" ["time" =.. now, "message" =.. message]
+  withTransaction db $ \ dbt -> do
+    insertRow_ dbt "log" ["time" =.. now, "message" =.. message]
 
 data DStatus =
   DStatus
@@ -485,9 +484,6 @@ upgradeDatabase db = withTransaction db $ \ dbt -> do
     upgradeFrom dbt (version :: Int)
   where
 
-    currentVersion :: Int
-    currentVersion = 1
-
     upgradeFrom dbt 0 = do
       initializeVariableTable dbt
 
@@ -501,10 +497,20 @@ upgradeDatabase db = withTransaction db $ \ dbt -> do
       createTable dbt "user_updates" ["time", "id", "attr", "val"]
 
       -- upgrade done
-      setVariable dbt "version" currentVersion
+      setVariable dbt "version" (1 :: Int)
       putStrLn' "Database initialized."
 
+    upgradeFrom dbt 1 = do
+      createTable dbt "tasks" ["id INTEGER PRIMARY KEY", "time", "action"]
+
+      -- upgrade done
+      setVariable dbt "version" (2 :: Int)
+      putStrLn' "Database upgraded to v2."
+
     upgradeFrom _ v = throwM (Abort ("unknown database version: " <> show v))
+
+    currentVersion :: Int
+    currentVersion = 2
 
 twitterAuth :: MonadManager r m =>
                Maybe (ByteString, ByteString)
@@ -556,6 +562,12 @@ runHandlers (Just x  : _) = x
 runHandlers (Nothing : r) = runHandlers r
 runHandlers []            = pure ()
 
+timelineProcessor :: MonadTwitter r m => Database -> User -> m ()
+timelineProcessor db myself = autorestart 1 $ do
+  void . withWatchdog 7200 $ \ watchdog -> do
+    userStream (processTimeline watchdog db myself)
+  logMessage db "warning: watchdog timer expired! restarting..."
+
 -- todo: rewrite this using JSON.Value instead of Twitter.Types
 -- perhaps with the help of lens combinators (is there a way to chain 'at' for nested maps?)
 processTimeline :: MonadTwitter r m =>
@@ -589,7 +601,7 @@ processStreamMsg db myself msg now
           updateUser db
       for_ (makeDRtStatus now status) $ \ status' ->
         withTransaction db $ \ dbt ->
-          insertRow dbt "statuses" status'
+          insertRow_ dbt "statuses" status'
 
   -- status
   | has (ix "id") msg = do
@@ -599,7 +611,7 @@ processStreamMsg db myself msg now
           updateUser db
       for_ (makeDStatus now status) $ \ status' -> do
         withTransaction db $ \ dbt ->
-          insertRow dbt "statuses" status'
+          insertRow_ dbt "statuses" status'
       stealthMode <- isStealthMode
       when (not stealthMode) $
         statusHandler db myself status
@@ -609,7 +621,7 @@ processStreamMsg db myself msg now
                         . ix "status" . JSON._Object = do
       for_ (makeDDelete now delete) $ \ delete' -> do
         withTransaction db $ \ dbt ->
-          insertRow dbt "deletes" delete'
+          insertRow_ dbt "deletes" delete'
 
   -- friends
   | has (ix "friends") msg = pure ()
@@ -617,14 +629,14 @@ processStreamMsg db myself msg now
   -- other
   | otherwise =
       withTransaction db $ \ dbt ->
-        insertRow dbt "misc_stream_msgs"
+        insertRow_ dbt "misc_stream_msgs"
           [ "time" =.. now
           , "data" =.. JSON.Object msg ]
 
 replyDelay :: MonadIO m => m Double
 replyDelay = do
   now <- getCurrentTime
-  let t = realToFrac (now `diffUTCTime` read "2016-03-10 11:00:00 EST")
+  let t = realToFrac (now `diffUTCTime` read "2016-03-10 12:00:00 EST")
   let mean = gradualTransition 0.01 (86400 * 2) 450 86400 t
   randomExponential mean
 
@@ -640,11 +652,7 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
       guard (message == ":3")
       pure . fork_ $ do
         delay <- replyDelay
-        logMessage db ("replying " <> show sId <>
-                       " in " <> show delay <> " sec")
-        sleepSec delay
-        postReplyR sName ":3" sId
-        logMessage db ("replied :3 to " <> show sId)
+        scheduleTaskSecFromNow db delay (A_Reply sName ":3" sId)
 
     , do
       count <- parseArfs message
@@ -659,10 +667,70 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
       awoo <- parseAwoo message
       pure . fork_ $ do
         delay <- replyDelay
-        logMessage db ("replying " <> show sId <>
-                       " in " <> show delay <> " sec")
-        sleepSec delay
-        postReplyR sName awoo sId
-        logMessage db ("replied awoo to " <> show sId)
+        scheduleTaskSecFromNow db delay (A_Reply sName awoo sId)
 
     ]
+
+data Action
+  = A_Reply {-screen name-}Text {-text-}Text StatusId
+  deriving (Eq, Ord, Read, Show)
+
+instance SQLiteValue Action where
+  fromSQLiteValue = maybeRead <=< fromSQLiteValue
+  toSQLiteValue = toSQLiteValue . show
+
+data TaskInfo
+  = TaskInfo UTCTime Action
+  deriving (Eq, Ord, Read, Show)
+
+taskInfoToSQLiteRecord :: TaskInfo -> SQL.Row SQL.Value
+taskInfoToSQLiteRecord (TaskInfo time action) =
+  [ "time" =.. time
+  , "action" =.. action
+  ]
+
+data Task
+  = Task Integer TaskInfo
+  deriving (Eq, Ord, Read, Show)
+
+taskFromSQLiteRecord :: SQL.Row SQL.Value -> Maybe Task
+taskFromSQLiteRecord (Map.fromList -> r) =
+  Task <$> (fromSQLiteValue =<< Map.lookup "id" r)
+       <*> (TaskInfo <$> (fromSQLiteValue =<< Map.lookup "time" r)
+                     <*> (fromSQLiteValue =<< Map.lookup "action" r))
+
+scheduleTask :: MonadIO m => Database -> TaskInfo -> m ()
+scheduleTask db taskInfo = do
+  logMessage db ("Scheduling " <> show taskInfo)
+  taskId <- withTransaction db $ \ dbt -> do
+    insertRow dbt "tasks" (taskInfoToSQLiteRecord taskInfo)
+  logMessage db ("Scheduled as task " <> show taskId)
+
+scheduleTaskSecFromNow :: MonadIO m => Database -> Double -> Action -> m ()
+scheduleTaskSecFromNow db delay action = do
+  now <- getCurrentTime
+  scheduleTask db (TaskInfo (realToFrac delay `addUTCTime` now) action)
+
+taskRunner :: MonadTwitter r m => Database -> m ()
+taskRunner db = autorestart 1 . forever $ do
+  now <- getCurrentTime
+  mAction <- withTransaction db $ \ dbt -> do
+    dueTasks <- sqlExec dbt ["now" =.. now]
+      "SELECT * FROM tasks WHERE time <= :now ORDER BY time LIMIT 1"
+    case dueTasks of
+      [[taskFromSQLiteRecord -> Just (Task taskId (TaskInfo _ action))]] -> do
+        logMessage db ("Running task " <> show taskId)
+        sqlExec_ dbt ["id" =.. taskId]
+          "DELETE FROM tasks WHERE task_id = :id"
+        pure (Just action)
+      _ -> pure Nothing
+  case mAction of
+    Nothing -> pure ()
+    Just action -> fork_ (runAction db action)
+  sleepSec =<< randomExponential 1
+
+runAction :: MonadTwitter r m => Database -> Action -> m ()
+runAction db (A_Reply screenName text statusId) = do
+  postReplyR screenName text statusId
+  logMessage db ("replied to " <> show statusId <>
+                 " with " <> show (screenName, text))

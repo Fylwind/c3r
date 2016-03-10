@@ -7,6 +7,7 @@ module Common
   , module Calico.ByteString.MonadIO
   , module Calico.Text.MonadIO
   , UTCTime
+  , addUTCTime
   , diffUTCTime
   ) where
 import Prelude ()
@@ -15,7 +16,7 @@ import Calico.MonadException
 import Calico.MonadIOControl
 import Calico.ByteString.MonadIO
 import Calico.Text.MonadIO
-import Data.Time (UTCTime, diffUTCTime)
+import Data.Time (UTCTime, addUTCTime, diffUTCTime)
 import System.Directory
 import System.Random (Random)
 import qualified System.Timeout

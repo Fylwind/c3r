@@ -93,6 +93,7 @@ instance SQLiteValue JSON.Value where
   toSQLiteValue = SQL.Text . TextL.unpack .
                   TextL.toLazyText . JSON.encodeToTextBuilder
 
+-- TODO: rename Record to Row
 class SQLiteRecord r where
   fromSQLiteRecord :: SQL.Row SQL.Value -> Maybe r
   toSQLiteRecord :: r -> SQL.Row SQL.Value
@@ -163,14 +164,20 @@ sqlExec_ (Transaction db) params stmt =
            SQL.execParamStatement_ db stmt
              (mapFst (":" <>) <$> toSQLiteRecord params)
 
-insertRow :: (MonadIO m, SQLiteRecord r) =>
+insertRow_ :: (MonadIO m, SQLiteRecord r) =>
              Transaction -> String -> r -> m ()
-insertRow db tableName record =
-  sqlExec_ db record' $
+insertRow_ dbt tableName record =
+  sqlExec_ dbt record' $
     "INSERT INTO " <> tableName <> " (" <> List.intercalate ", " fields <>
     ") VALUES (" <> List.intercalate ", " ((":" <>) <$> fields) <> ");"
   where fields  = fst <$> record'
         record' = toSQLiteRecord record
+
+insertRow :: (MonadIO m, SQLiteRecord r) =>
+             Transaction -> String -> r -> m Integer
+insertRow dbt@(Transaction db) tableName record = do
+  insertRow_ dbt tableName record
+  liftIO (SQL.getLastRowID db)
 
 createTable :: MonadIO m => Transaction -> String -> [String] -> m ()
 createTable db name fields =
