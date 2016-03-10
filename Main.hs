@@ -545,6 +545,12 @@ parseArfs :: Text -> Maybe Int
 parseArfs = simpleParse (P.spaces *> parser)
   where parser = length <$> some (pTokenS "arf") <* P.optional (pTokenS ":3")
 
+parseAwoo :: Text -> Maybe Text
+parseAwoo = simpleParse (P.spaces *> parser)
+  where parser = Text.pack <$> pToken ((<>) <$> P.string "aw"
+                                            <*> some (P.char 'o'))
+                 <* P.optional (pTokenS ":3")
+
 runHandlers :: Monad m => [Maybe (m ())] -> m ()
 runHandlers (Just x  : _) = x
 runHandlers (Nothing : r) = runHandlers r
@@ -615,6 +621,13 @@ processStreamMsg db myself msg now
           [ "time" =.. now
           , "data" =.. JSON.Object msg ]
 
+replyDelay :: MonadIO m => m Double
+replyDelay = do
+  now <- getCurrentTime
+  let t = realToFrac (now `diffUTCTime` read "2016-03-10 11:00:00 EST")
+  let mean = gradualTransition 0.01 (86400 * 2) 450 86400 t
+  randomExponential mean
+
 statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
   sName <- status ^? ix "user" . ix "screen_name" . JSON._String
@@ -623,17 +636,15 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
   (name, _, message) <- parseStatusText sText
   guard (name == myself ^. userScreenName)
   pure $ runHandlers
-    [ if message == ":3"
-      then pure . fork_ $ do
-        let coeff = 60 -- seconds
-        factor <- randomRIO (0.01, 15 :: Double)
-        let delay = coeff * factor
+    [ do
+      guard (message == ":3")
+      pure . fork_ $ do
+        delay <- replyDelay
         logMessage db ("replying " <> show sId <>
                        " in " <> show delay <> " sec")
         sleepSec delay
         postReplyR sName ":3" sId
-        logMessage db ("replied to " <> show sId)
-      else mzero
+        logMessage db ("replied :3 to " <> show sId)
 
     , do
       count <- parseArfs message
@@ -642,6 +653,16 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
         let count' = round (fromIntegral count * factor)
             msg    = mconcat (List.replicate count' "arf") <> " :3"
         postReplyR sName msg sId
-        logMessage db "replied"
+        logMessage db ("replied arfs to " <> show sId)
+
+    , do
+      awoo <- parseAwoo message
+      pure . fork_ $ do
+        delay <- replyDelay
+        logMessage db ("replying " <> show sId <>
+                       " in " <> show delay <> " sec")
+        sleepSec delay
+        postReplyR sName awoo sId
+        logMessage db ("replied awoo to " <> show sId)
 
     ]

@@ -7,6 +7,7 @@ module Common
   , module Calico.ByteString.MonadIO
   , module Calico.Text.MonadIO
   , UTCTime
+  , diffUTCTime
   ) where
 import Prelude ()
 import Calico.Base
@@ -14,7 +15,7 @@ import Calico.MonadException
 import Calico.MonadIOControl
 import Calico.ByteString.MonadIO
 import Calico.Text.MonadIO
-import Data.Time (UTCTime)
+import Data.Time (UTCTime, diffUTCTime)
 import System.Directory
 import System.Random (Random)
 import qualified System.Timeout
@@ -100,11 +101,18 @@ watchdogThread watchdog@(Watchdog var) interval = do
 kickWatchdog :: MonadIO m => Watchdog -> m ()
 kickWatchdog (Watchdog var) = void (tryPutMVar var ())
 
+randomIO :: (MonadIO m, Random a) => m a
+randomIO = liftIO Random.randomIO
+
 randomRIO :: (MonadIO m, Random a) => (a, a) -> m a
 randomRIO = liftIO . Random.randomRIO
 
 randomDouble :: MonadIO m => (Double, Double) -> m Double
 randomDouble = randomRIO
+
+randomExponential :: (Floating b, MonadIO f, Random b) => b -> f b
+randomExponential mean =
+  (\ x -> (-log x) * mean) <$> randomIO
 
 randomFiber :: MonadIO m => [[a]] -> m [a]
 randomFiber []               = pure []
@@ -112,6 +120,26 @@ randomFiber (choices : rest) = do
   index <- randomRIO (0, length choices - 1)
   rest' <- randomFiber rest
   pure (choices !! index : rest')
+
+-- | A sigmoid function defined by @('tanh' x + 1) / 2@.
+sigmoidTanh :: Floating a => a -> a
+sigmoidTanh x = 0.5 * (tanh x + 1)
+
+-- | Inverse of 'sigmoidTanh'
+invSigmoidTanh :: Floating a => a -> a
+invSigmoidTanh x = atanh (2 * x - 1)
+
+gradualTransition :: Floating a =>
+                     a                  -- ^ tolerance (e.g. 0.01 for 1%)
+                  -> a                  -- ^ duration of the transition phase
+                  -> a                  -- ^ old value
+                  -> a                  -- ^ new value
+                  -> a                  -- ^ time since start of transition
+                  -> a
+gradualTransition tolerance duration old new t =
+  old * (new / old) ** sigmoidTanh (t / duration * (t1 + t0) - t0)
+  where t0 = -invSigmoidTanh (log (1 + tolerance) / log (new / old))
+        t1 = invSigmoidTanh (log (1 - tolerance) / log (new / old) + 1)
 
 _s :: String -> String
 _s = id
