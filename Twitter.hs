@@ -60,7 +60,7 @@ getUsersById :: MonadTwitter r m => [Integer] -> m [JSON.Value]
 getUsersById ids = do
   tw  <- view twitter
   mgr <- view manager
-  call' tw mgr (usersLookup (UserIdListParam ids))
+  liftIO (call' tw mgr (usersLookup (UserIdListParam ids)))
 
 getUsersById_max :: Int
 getUsersById_max = 100
@@ -152,7 +152,7 @@ withTWInfo action = do
 
 getMyself :: MonadTwitter r m => m User
 getMyself = withTWInfo $ \ tw mgr -> do
-  call tw mgr accountVerifyCredentials
+  liftIO (call tw mgr accountVerifyCredentials)
 
 userStream :: MonadTwitter r m => (JSON.Value -> m ()) -> m ()
 userStream action = withTWInfo $ \ tw mgr -> do
@@ -161,7 +161,7 @@ userStream action = withTWInfo $ \ tw mgr -> do
 
 postReply :: MonadTwitter r m => Text -> Integer -> m ()
 postReply msg id = withTWInfo $ \ tw mgr -> do
-  void . call tw mgr $ update msg & inReplyToStatusId ?~ id
+  void (liftIO (call tw mgr (update msg & inReplyToStatusId ?~ id)))
 
 -- | Reply the given user, inserting extra spaces if necessary to avoid
 --   the "Status duplicate" error
