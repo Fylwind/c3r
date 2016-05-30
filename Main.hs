@@ -642,6 +642,7 @@ replyDelay = do
 
 statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
+  sUid  <- status ^? ix "user" . ix "id" . JSON._Integer
   sName <- status ^? ix "user" . ix "screen_name" . JSON._String
   sText <- status ^? ix "text" . JSON._String
   sId   <- status ^? ix "id" . JSON._Integer
@@ -653,6 +654,20 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
       pure . fork_ $ do
         delay <- replyDelay
         scheduleTaskSecFromNow db delay (A_Reply sName ":3" sId)
+
+    , do
+      guard (message == "<3")
+      guard (sUid == 3414016491)
+      pure . fork_ $ do
+        delay <- replyDelay
+        scheduleTaskSecFromNow db delay (A_Reply sName "<3" sId)
+
+    , do
+      guard (message == "\x2764")
+      guard (sUid == 3414016491)
+      pure . fork_ $ do
+        delay <- replyDelay
+        scheduleTaskSecFromNow db delay (A_Reply sName "\x01f49a" sId)
 
     , do
       count <- parseArfs message
