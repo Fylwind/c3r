@@ -175,12 +175,9 @@ def merge_adjacent_diffs(diffs):
 def userlog(db, user):
     user = db.user(user)
     with pager() as stream:
-        first = True
+        stream.write("# id: {0}\n".format(user.id))
         for diff in reversed(db.get_user_history(user)):
-            if first:
-                first = False
-            else:
-                stream.write("\n")
+            stream.write("\n")
             stream.write(str(diff))
             stream.write("\n")
             stream.flush()
