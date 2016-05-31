@@ -29,6 +29,7 @@ a.out
 
 # Haskell
 .cabal-sandbox/
+.stack-work/
 cabal.sandbox.config
 dist/
 *.chi
