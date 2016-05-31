@@ -18,18 +18,6 @@ executable c3r
                        Diff
                        Keys
                        Twitter
-                       Calico.Base
-                       Calico.IO
-                       Calico.IOControl
-                       Calico.MonadIO
-                       Calico.MonadIOControl
-                       Calico.ByteString
-                       Calico.ByteString.IO
-                       Calico.ByteString.MonadIO
-                       Calico.Text
-                       Calico.Text.IO
-                       Calico.Text.MonadIO
-  hs-source-dirs:      . calico
   other-extensions:    ConstraintKinds
                        FlexibleContexts
                        FlexibleInstances
@@ -39,6 +27,7 @@ executable c3r
                      , aeson-pretty
                      , authenticate-oauth
                      , bytestring
+                     , calico
                      , conduit
                      , containers
                      , data-default
