@@ -674,7 +674,7 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
         scheduleTaskSecFromNow db delay (A_Reply sName "<3" sId)
 
     , do
-      guard (message == "\x2764")
+      guard (message == "\x9829")
       guard (sUid == 3414016491)
       pure . fork_ $ do
         delay <- replyDelay
