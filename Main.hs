@@ -340,6 +340,12 @@ logMessage db message = do
   whenM isDebugMode $ do
     putStrLn' ("[" <> show now <> "] " <> message)
 
+logDebugMessage :: MonadIO m => String -> m ()
+logDebugMessage message = do
+  now <- getCurrentTime
+  whenM isDebugMode $ do
+    putStrLn' ("[" <> show now <> "] " <> message)
+
 data DStatus =
   DStatus
   { ds_time :: UTCTime
@@ -651,7 +657,9 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
   sId   <- status ^? ix "id" . JSON._Integer
   (name, _, message) <- parseStatusText sText
   guard (name == myself ^. userScreenName)
-  pure $ runHandlers
+  pure $ logDebugMessage ("sText = " <> show sText) >>
+         logDebugMessage ("message = " <> show message) >>
+    runHandlers
     [ do
       guard (message == ":3")
       pure . fork_ $ do
