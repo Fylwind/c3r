@@ -480,11 +480,14 @@ makeDDelete time delete = do
   pure (DDelete time dUserId dId)
 
 upgradeDatabase :: MonadIO m => Database -> m ()
-upgradeDatabase db = withTransaction db $ \ dbt -> do
-  version <- fromMaybe 0 <$> getVariable dbt "version"
-  when (version /= currentVersion) $ do
-    upgradeFrom dbt (version :: Int)
+upgradeDatabase db = withTransaction db doUpgrade
   where
+
+    doUpgrade dbt = do
+      version <- fromMaybe 0 <$> getVariable dbt "version"
+      when (version /= currentVersion) $ do
+        upgradeFrom dbt (version :: Int)
+        doUpgrade dbt
 
     upgradeFrom dbt 0 = do
       initializeVariableTable dbt
