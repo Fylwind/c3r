@@ -574,10 +574,11 @@ runHandlers (Nothing : r) = runHandlers r
 runHandlers []            = pure ()
 
 timelineProcessor :: MonadTwitter r m => Database -> User -> m ()
-timelineProcessor db myself = autorestart 1 $ do
+timelineProcessor db myself = forever $ do
   void . withWatchdog 7200 $ \ watchdog -> do
     userStream (processTimeline watchdog db myself)
   logMessage db "warning: watchdog timer expired! restarting..."
+  sleepSec 1
 
 -- todo: rewrite this using JSON.Value instead of Twitter.Types
 -- perhaps with the help of lens combinators (is there a way to chain 'at' for nested maps?)
