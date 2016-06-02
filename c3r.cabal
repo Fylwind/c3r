@@ -34,6 +34,7 @@ executable c3r
                      , directory
                      , exceptions
                      , hashable
+                     , html-entities
                      , http-types
                      , http-conduit
                      , lens

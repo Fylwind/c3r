@@ -13,6 +13,7 @@ import Data.Hashable (Hashable)
 import Data.HashMap.Strict (HashMap)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
+import HTMLEntities.Decoder (htmlEncodedText)
 import Web.Twitter.Types.Lens
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Lens as JSON
@@ -23,6 +24,8 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
+import qualified Data.Text.Lazy as TextLazy
+import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Data.Text.Encoding as Text
 import qualified Database.SQLite as SQL
 import qualified Network.HTTP.Conduit as HTTP
@@ -654,11 +657,13 @@ statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
   sUid  <- status ^? ix "user" . ix "id" . JSON._Integer
   sName <- status ^? ix "user" . ix "screen_name" . JSON._String
-  sText <- status ^? ix "text" . JSON._String
+  sText <- TextLazy.toStrict . TextBuilder.toLazyText . htmlEncodedText <$>
+           (status ^? ix "text" . JSON._String)
   sId   <- status ^? ix "id" . JSON._Integer
   (name, _, message) <- parseStatusText sText
   guard (name == myself ^. userScreenName)
-  pure $ logDebugMessage ("sText = " <> show sText) >>
+  pure $ logDebugMessage ("sUid = " <> show sUid) >>
+         logDebugMessage ("sText = " <> show sText) >>
          logDebugMessage ("message = " <> show message) >>
     runHandlers
     [ do
@@ -675,7 +680,7 @@ statusHandler db myself status = fromMaybe (pure ()) $ do
         scheduleTaskSecFromNow db delay (A_Reply sName "<3" sId)
 
     , do
-      guard (message == "\x9829")
+      guard (message `elem` ["\x2665", "\x2764", "\x2764\xfe0f"])
       guard (sUid == 3414016491)
       pure . fork_ $ do
         delay <- replyDelay

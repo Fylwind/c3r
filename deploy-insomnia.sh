@@ -26,7 +26,7 @@ cd $app
 git fetch -p origin
 git reset --hard origin/$branch
 git submodule update --init --recursive
-stack init --force
+stack --resolver=lts-6.1 init --force
 stack build
 sudo install -m755 "\`stack exec which $app\`" $bindir/$app
 sudo pkill -x $app
