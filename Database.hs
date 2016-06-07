@@ -124,8 +124,10 @@ withConnection :: String -> (Database -> IO c) -> IO c
 withConnection name = bracket acquire release
   where acquire = do
           db <- SQL.openConnection name
-          vdb <- newMVar db
-          pure (Database vdb)
+          -- use WAL to improve currency between reads and writes
+          throwIfJust DatabaseError =<< SQL.execStatement_ db
+            "PRAGMA journal_mode=WAL;"
+          Database <$> newMVar db
         release (Database vdb) = do
           modifyMVar_ vdb $ \ db -> do
             SQL.closeConnection db
