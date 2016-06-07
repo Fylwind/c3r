@@ -1,0 +1,13 @@
+[Unit]
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+ExecStart=/usr/local/bin/c3r
+User=c3r
+WorkingDirectory=/var/lib/c3r
+
+[Install]
+WantedBy=default.target
