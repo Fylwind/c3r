@@ -82,12 +82,11 @@ class Diff(object):
         self.deletes = deletes
         self.inserts = inserts
         self.metadata = metadata
-    def __str__(self):
+    def render(self):
         return "\n".join([
             "# " + str(self.metadata),
         ] + ["- {0}".format(k) for k in self.deletes]
           + ["+ {0}: {1}".format(k, v) for k, v in self.inserts])
-        return json_pretty(vars(self))
 
 DEFAULT_DB_FILENAME = "c3r.db"
 
@@ -178,7 +177,7 @@ def userlog(db, user):
         stream.write("# id: {0}\n".format(user.id))
         for diff in reversed(db.get_user_history(user)):
             stream.write("\n")
-            stream.write(str(diff))
+            stream.write(diff.render())
             stream.write("\n")
             stream.flush()
 
@@ -186,6 +185,8 @@ def userlog(db, user):
 def generate_user_color(user_id):
     import hashlib
     h = hashlib.sha1(str(user_id).encode("ascii")).digest()
+    if isinstance(h, str):              # for Python 2 compatibility
+        h = bytearray(h)
     i = sum(c << (8 * i) for i, c in enumerate(h))
     return (i - 2) % 6 + 1
 
