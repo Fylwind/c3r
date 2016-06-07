@@ -51,6 +51,7 @@ SERVICEEOF
 groups $app >/dev/null 2>&1 ||
 sudo useradd -r -s /usr/sbin/nologin -m -d /var/lib/$app $app
 sudo chmod 700 /var/lib/$app
+sudo cp -r tools /var/lib/$app
 
 sudo systemctl daemon-reload
 sudo systemctl enable $app
@@ -64,4 +65,3 @@ else
 to configure.  Then, start the service using \`systemctl start $app\`.'
 fi
 EOF
-echo Done.

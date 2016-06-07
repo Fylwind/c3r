@@ -36,7 +36,7 @@ def wrap_pipe_as_text_file(pipe, mode, *args, **kwargs):
 
 @contextlib.contextmanager
 def pager():
-    p = subprocess.Popen(["less"], stdin=subprocess.PIPE)
+    p = subprocess.Popen(["less", "-R"], stdin=subprocess.PIPE)
     yield wrap_pipe_as_text_file(p.stdin, "w")
     p.stdin.close()
     p.wait()                            # needed otherwise pager will exit

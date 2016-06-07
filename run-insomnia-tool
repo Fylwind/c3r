@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+import os, sys
+
+def shell_escape(s):
+    return "'{0}'".format(s.replace("'", "'\\''"))
+
+if len(sys.argv) < 2:
+    sys.stderr.write("usage: {0} tools/<cmd> [<args>...]\n"
+                     .format(os.path.basename(__file__)))
+    sys.stderr.flush()
+    exit(1)
+
+sh_args = ("cd /var/lib/c3r && ./" +
+           " ".join(shell_escape(arg) for arg in sys.argv[1:]))
+ssh_args = "sudo -u c3r sh -c " + shell_escape(sh_args)
+os.execvp("ssh", ["ssh", "-t", "insomnia", ssh_args])
