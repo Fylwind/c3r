@@ -1,6 +1,8 @@
 cabal.config
 Keys.hs
 *.db
+*.db-shm
+*.db-wal
 
 # generic
 .\#*
