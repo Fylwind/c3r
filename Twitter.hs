@@ -28,9 +28,7 @@ import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
 import Data.Aeson (FromJSON)
 import Data.Conduit (($$), ($$+-))
 import Data.Conduit.List (consume)
-import Data.Default (def)
 import Network.HTTP.Conduit
-import Web.Authenticate.OAuth (OAuth(..), Credential(..))
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens hiding (name)
 import qualified Data.Aeson as JSON
