@@ -205,8 +205,8 @@ augmentUserInfo db friendIds followerIds user =
       & (`Map.difference` setToMap () (Set.fromList ignoredUserEntries))
       -- although "following" is already part of the Twitter API,
       -- it is sometimes missing so we recompute it here
-      & ix "following" .~ JSON.Bool (Set.member userId friendIds)
-      & ix "follower" .~ JSON.Bool (Set.member userId followerIds)
+      & at "following" .~ Just (JSON.Bool (Set.member userId friendIds))
+      & at "follower" .~ Just (JSON.Bool (Set.member userId followerIds))
       & ix "url" (jsonText (dereferenceUrl db))
   where ignoredUserEntries = ["entities", "id", "id_str", "status"]
 
