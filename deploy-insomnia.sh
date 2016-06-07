@@ -56,9 +56,10 @@ if [ "\$changed" ]; then
         printf '%s' 'Note: Service is not yet configured; to configure, run:
 
     (cd /var/lib/$app && sudo -u $app /usr/local/bin/$app)
-    systemctl start $app
+    sudo systemctl start $app
 
 '
     fi
 fi
+script -q -c "sudo systemctl status --no-pager $app.service" /dev/null
 EOF
