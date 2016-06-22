@@ -7,7 +7,7 @@ Restart=always
 RestartSec=30
 ExecStart=/usr/local/bin/c3r
 User=c3r
-WorkingDirectory=/var/lib/c3r
+WorkingDirectory=~
 
 [Install]
 WantedBy=default.target

@@ -61,5 +61,5 @@ if [ "\$changed" ]; then
 '
     fi
 fi
-script -q -c "sudo systemctl status --no-pager $app.service" /dev/null
+script -e -q -c "sudo systemctl status --no-pager $app.service" /dev/null
 EOF
