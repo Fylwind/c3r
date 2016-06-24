@@ -30,6 +30,7 @@ import Data.Conduit (($$), ($$+-))
 import Data.Conduit.List (consume)
 import Network.HTTP.Conduit
 import Web.Twitter.Conduit
+import qualified Web.Twitter.Conduit.Parameters as P
 import Web.Twitter.Types.Lens hiding (name)
 import qualified Data.Aeson as JSON
 import qualified Data.ByteString.Char8 as ByteString
@@ -39,7 +40,7 @@ import qualified Data.Text as Text
 import qualified Web.Authenticate.OAuth as OAuth
 
 type ListAPI a c s = (FromJSON s, CursorKey c,
-                      HasCursorParam (APIRequest a (WithCursor c s)))
+                      P.HasCursorParam (APIRequest a (WithCursor c s)))
 
 getList :: (MonadTwitter r m, ListAPI a c s) =>
            APIRequest a (WithCursor c s) -> m [s]
@@ -159,7 +160,7 @@ userStream action = withTWInfo $ \ tw mgr -> do
 
 postReply :: MonadTwitter r m => Text -> Integer -> m ()
 postReply msg id = withTWInfo $ \ tw mgr -> do
-  void (liftIO (call tw mgr (update msg & inReplyToStatusId ?~ id)))
+  void (liftIO (call tw mgr (update msg & P.inReplyToStatusId ?~ id)))
 
 -- | Reply the given user, inserting extra spaces if necessary to avoid
 --   the "Status duplicate" error

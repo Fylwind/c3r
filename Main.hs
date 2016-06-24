@@ -47,8 +47,7 @@ main = do
       fork_ (taskRunner db)
       timelineProcessor db myself
 
-withTwitter :: (MonadIO m, MonadMask m) =>
-               Database -> TwitterM a -> m a
+withTwitter :: MonadIO m => Database -> TwitterM a -> m a
 withTwitter db action = do
   (token, secret) <-
     withTransaction db $ \ dbt ->
@@ -457,7 +456,7 @@ makeDRtStatus time rt = do
 deleteKeysFromHashMap :: (Eq k, Hashable k) => [k] -> HashMap k v -> HashMap k v
 deleteKeysFromHashMap ks m = foldl' (flip HashMap.delete) m ks
 
-hashMapToMap :: (Ord k, Hashable k) => HashMap k v -> Map k v
+hashMapToMap :: Ord k => HashMap k v -> Map k v
 hashMapToMap = Map.fromList . HashMap.toList
 
 data DDelete =
