@@ -38,5 +38,5 @@ Debugging
 Useful environment variables for debugging:
 
 ~~~
-C3R_STEALTH=t C3R_LOG=t
+C3R_DEBUG=t C3R_LOG=t
 ~~~
