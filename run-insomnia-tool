@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import os, sys
+import os, subprocess, sys
 
 def shell_escape(s):
     return "'{0}'".format(s.replace("'", "'\\''"))
@@ -13,4 +13,7 @@ if len(sys.argv) < 2:
 sh_args = ("cd /var/lib/c3r && ./" +
            " ".join(shell_escape(arg) for arg in sys.argv[1:]))
 ssh_args = "sudo -u c3r sh -c " + shell_escape(sh_args)
+subprocess.check_call(["rsync", "-a", "tools", "insomnia:c3r/"])
+subprocess.check_call(["ssh", "-t", "insomnia",
+                       "sudo", "rsync", "-a", "c3r/tools", "/var/lib/c3r/"])
 os.execvp("ssh", ["ssh", "-t", "insomnia", ssh_args])

@@ -59,14 +59,22 @@ def json_canonical(data, ensure_ascii=False, sort_keys=True, **kwargs):
         **kwargs
     )
 
-def json_pretty(data):
-    return json_canonical(data, indent=4, separators=(",", ": "))
+def json_pretty(data, ensure_ascii=False):
+    return json_canonical(data, indent=4, separators=(",", ": "),
+                          ensure_ascii=ensure_ascii)
 
 class JSONObject(object):
+
     def __init__(self, data):
         self.__dict__ = data
+
     def __str__(self):
-        return json_pretty(vars(self))
+        if getattr(bytes, "encode"):
+            return self.pretty(ensure_ascii=True).encode("ascii")
+        return self.pretty()
+
+    def pretty(self, ensure_ascii=False):
+        return json_pretty(vars(self), ensure_ascii=ensure_ascii)
 
 class User(JSONObject):
     pass
@@ -340,7 +348,7 @@ class Program(object):
         with pager() as stream:
             stream.write("# id: {0}\n".format(user.id))
             for diff in self.db.get_user_history(user, reverse=True):
-                diff = diff.map(metadata_func=rerender_date)
+                diff = diff.map(metadata_func=rerender_time)
                 stream.write("\n")
                 stream.write(diff.render())
                 stream.write("\n")
