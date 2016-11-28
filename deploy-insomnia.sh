@@ -11,10 +11,10 @@ srv=insomnia
 app=c3r
 remote=https://github.com/Fylwind/$app
 branch=${1-master}
+pkgs='html-entities-1.1.2 sqlite-0.5.5'
 
 # ----------------------------------------------------------------------------
 
-rsync -aPvc Keys.hs "$srv:$app/Keys.hs"
 ssh -T "$srv" <<EOF
 set -eu
 changed=
@@ -27,9 +27,20 @@ cd $app
 git fetch -p origin
 git reset --hard origin/$branch
 git submodule update --init --recursive
+EOF
+rsync -aPvc Keys.hs "$srv:$app/Keys.hs"
+ssh -T "$srv" <<EOF
+set -eu
+cd $app
+
+for pkg in $pkgs; do
+    [ -d \$pkg ] ||
+        curl -L https://hackage.haskell.org/package/\$pkg/\$pkg.tar.gz |
+            gunzip | tar xf -
+done
 
 stack upgrade
-stack --resolver=lts-6.1 init --force
+stack init --force
 stack build
 
 cmp "\`stack exec which $app\`" /usr/local/bin/$app >/dev/null 2>&1 || {
