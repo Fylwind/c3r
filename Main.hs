@@ -299,7 +299,7 @@ fromJSON' x =
 prettyJSON :: ToJSON a => a -> ByteString
 prettyJSON =
   ByteStringL.toStrict .
-  JP.encodePretty' JP.Config { JP.confIndent = 4, JP.confCompare = compare }
+  JP.encodePretty' JP.Config { JP.confIndent = JP.Spaces 4, JP.confCompare = compare }
 
 mapJSONObject :: (JSON.Object -> JSON.Object) -> JSON.Value -> JSON.Value
 mapJSONObject f (JSON.Object x) = JSON.Object (f x)
