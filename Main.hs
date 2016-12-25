@@ -277,9 +277,8 @@ dereferenceUrl db url | not (isShort url) = pure url
 findRedirect :: MonadManager r m => Text -> m (Maybe Text)
 findRedirect url = do
   mgr <- view manager
-  request <- HTTP.parseUrl (Text.unpack url)
-  let request' = request { HTTP.redirectCount = 0
-                         , HTTP.checkStatus = \_ _ _ -> Nothing }
+  request <- HTTP.parseRequest (Text.unpack url)
+  let request' = request { HTTP.redirectCount = 0 }
   response <- tryAny (HTTP.httpLbs request' mgr)
   pure $
     eitherToMaybe . Text.decodeUtf8' =<<
@@ -299,7 +298,7 @@ fromJSON' x =
 prettyJSON :: ToJSON a => a -> ByteString
 prettyJSON =
   ByteStringL.toStrict .
-  JP.encodePretty' JP.Config { JP.confIndent = JP.Spaces 4, JP.confCompare = compare }
+  JP.encodePretty' JP.defConfig{ JP.confCompare = compare }
 
 mapJSONObject :: (JSON.Object -> JSON.Object) -> JSON.Value -> JSON.Value
 mapJSONObject f (JSON.Object x) = JSON.Object (f x)

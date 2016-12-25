@@ -6,7 +6,7 @@ import Common
 import Data.Int (Int64)
 import Database.SQLite (SQLiteHandle)
 import qualified Data.Aeson as JSON
-import qualified Data.Aeson.Encode as JSON
+import qualified Data.Aeson.Text as JSON
 import qualified Data.ByteString.Lazy as BytesL
 import qualified Data.List as List
 import qualified Data.Text as Text

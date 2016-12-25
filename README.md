@@ -19,6 +19,11 @@ Save the file, but without the `.EXAMPLE` suffix.
 Build the program
 -----------------
 
+Create a sandbox:
+
+    cabal sandbox init
+    cabal sandbox add-source calico
+
 Make sure dependencies are installed:
 
     cabal install --dependencies-only
@@ -30,13 +35,6 @@ To compile the program:
 Run the program
 ---------------
 
-    cabal run
+    C3R_DEBUG=t C3R_LOG=t cabal run
 
-Debugging
----------
-
-Useful environment variables for debugging:
-
-~~~
-C3R_DEBUG=t C3R_LOG=t
-~~~
+Strip the environment variables when live.
