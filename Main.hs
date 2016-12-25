@@ -646,10 +646,7 @@ processStreamMsg db myself msg now
 
 replyDelay :: MonadIO m => m Double
 replyDelay = do
-  now <- getCurrentTime
-  let t = realToFrac (now `diffUTCTime` read "2016-03-10 16:00:00 EST")
-  let mean = gradualTransition 10 0.3 (86400 * 2) 450 86400 t
-  randomExponential mean
+  randomExponential (86400 * 3)
 
 statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
