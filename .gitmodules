@@ -7,3 +7,6 @@
 [submodule "sqlite"]
 	path = sqlite
 	url = https://github.com/Rufflewind/sqlite
+[submodule "twitter-conduit"]
+	path = twitter-conduit
+	url = https://github.com/Rufflewind/twitter-conduit

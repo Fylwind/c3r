@@ -1,17 +1,14 @@
 #!/bin/sh
-#
-# Initial preparation
-# -------------------
-#
-#   <install Stack using instructions from official site>
-#
 set -eu
 
 srv=insomnia
 app=c3r
 remote=https://github.com/Fylwind/$app
 branch=${1-master}
-pkgs='html-entities-1.1.2 sqlite-0.5.5'
+resolver=lts-8
+
+# note if you want to recreate the stack.yaml
+# you can uncomment the stack init command
 
 # ----------------------------------------------------------------------------
 
@@ -19,7 +16,7 @@ ssh -T "$srv" <<EOF
 set -eu
 changed=
 
-sudo apt-get -y install libsqlite3-dev stack
+sudo apt-get -y install cabal-install libsqlite3-dev stack
 
 [ -d $app ] ||
     git clone --recursive $remote $app
@@ -33,15 +30,11 @@ ssh -T "$srv" <<EOF
 set -eu
 cd $app
 
-for pkg in $pkgs; do
-    [ -d \$pkg ] ||
-        curl -L https://hackage.haskell.org/package/\$pkg/\$pkg.tar.gz |
-            gunzip | tar xf -
-done
-
 stack upgrade
-stack init --force
+#stack init --force --solver --install-ghc --resolver ${resolver-}
 stack build
+
+changed=
 
 cmp "\`stack exec which $app\`" /usr/local/bin/$app >/dev/null 2>&1 || {
     sudo install -m755 "\`stack exec which $app\`" /usr/local/bin/$app
