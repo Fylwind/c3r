@@ -646,7 +646,7 @@ processStreamMsg db myself msg now
 
 replyDelay :: MonadIO m => m Double
 replyDelay = do
-  randomExponential (86400 * 3)
+  randomExponential (86400 * 7)
 
 statusHandler :: MonadTwitter r m => Database -> User -> JSON.Object -> m ()
 statusHandler db myself status = fromMaybe (pure ()) $ do
