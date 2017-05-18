@@ -4,9 +4,6 @@
 [submodule "html-entities"]
 	path = html-entities
 	url = https://github.com/Rufflewind/html-entities
-[submodule "sqlite"]
-	path = sqlite
-	url = https://github.com/Rufflewind/sqlite
 [submodule "twitter-conduit"]
 	path = twitter-conduit
-	url = https://github.com/Rufflewind/twitter-conduit
+	url = https://github.com/himura/twitter-conduit

@@ -1,2 +1,0 @@
-#!/bin/sh
-cabal install --force-reinstall --reinstall data-default data-default-class
